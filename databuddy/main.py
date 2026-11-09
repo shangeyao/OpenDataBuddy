@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import config, seed
-from .api import auth, chat, data, ops
+from .api import auth, chat, console, data, ops
 from .flows import scheduler
 
 
@@ -42,6 +42,7 @@ app.include_router(auth.router)
 app.include_router(data.router)
 app.include_router(chat.router)
 app.include_router(ops.router)
+app.include_router(console.router)
 
 
 @app.get("/api/health")

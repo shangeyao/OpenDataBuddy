@@ -16,6 +16,26 @@ const P = {
   table: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M9 10v10"/>',
   dot: '<circle cx="12" cy="12" r="3.5"/>',
   spark: '<path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5L18 18M18 6l-2.5 2.5M8.5 15.5L6 18"/>',
+  // 控制台二级模块
+  studio: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/><path d="M8 13l-2 2 2 2"/><path d="M13 13l2 2-2 2"/>',
+  cicd: '<circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M6 8.5V15a3 3 0 003 3h6"/><path d="M15 5.5h3v3"/>',
+  ops: '<path d="M3 12h4l2.5-6 3 12 2.5-6h6"/>',
+  experiment: '<path d="M9 3v6L4 19a1 1 0 00.9 1.4h14.2A1 1 0 0020 19l-5-10V3"/><path d="M8 3h8"/><path d="M6.5 14h11"/>',
+  registry: '<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M12 12l8-4.5M12 12v9M12 12L4 7.5"/>',
+  serving: '<circle cx="12" cy="12" r="2.5"/><path d="M5.5 5.5a9 9 0 000 13M18.5 5.5a9 9 0 010 13"/><path d="M8.5 8.5a5 5 0 000 7M15.5 8.5a5 5 0 010 7"/>',
+  explore: '<circle cx="11" cy="11" r="6.5"/><path d="M16 16l5 5"/>',
+  analysis: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M7 15l3-4 3 2 4-6"/>',
+  quality: '<path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z"/><path d="M9 12l2 2 4-4"/>',
+  security: '<rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 018 0v3"/>',
+  agents: '<circle cx="12" cy="8" r="3.5"/><path d="M5 20a7 7 0 0114 0"/><path d="M2 12h2M20 12h2"/>',
+  mcp: '<rect x="3" y="8" width="7" height="8" rx="1.5"/><rect x="14" y="8" width="7" height="8" rx="1.5"/><path d="M10 12h4"/>',
+  modellist: '<path d="M4 6h16M4 12h16M4 18h10"/>',
+  workspaces: '<rect x="3" y="4" width="8" height="7" rx="1.5"/><rect x="13" y="4" width="8" height="7" rx="1.5"/><rect x="3" y="13" width="8" height="7" rx="1.5"/><rect x="13" y="13" width="8" height="7" rx="1.5"/>',
+  users: '<circle cx="9" cy="8" r="3.2"/><path d="M2.5 20a6.5 6.5 0 0113 0"/><path d="M17 11a3 3 0 100-6"/><path d="M18 20a5.5 5.5 0 00-2-4.3"/>',
+  platform: '<rect x="3" y="4" width="18" height="7" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/><path d="M7 7.5h.01M7 17h.01"/>',
+  sources: '<ellipse cx="12" cy="6" rx="7.5" ry="3"/><path d="M4.5 6v12c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3V6"/>',
+  compute: '<rect x="4" y="4" width="16" height="6" rx="1.5"/><rect x="4" y="14" width="16" height="6" rx="1.5"/><path d="M8 7h.01M8 17h.01"/>',
+  subscription: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18"/><path d="M7 15h4"/>',
 };
 
 export function icon(name, size = 16) {

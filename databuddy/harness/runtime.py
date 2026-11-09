@@ -284,6 +284,20 @@ class HarnessRuntime:
             "steps": state.get("step", 0),
         }
 
+    def _record_rule_trace(self, items: list[dict]) -> None:
+        """规则引擎也写轨迹，保证评测页与审计链路完整。"""
+        for step, item in enumerate(items, start=1):
+            trace.record(
+                self.conversation_id,
+                self.workspace_id,
+                step,
+                str(item.get("tool") or "rule_engine"),
+                item.get("args") or {},
+                item.get("summary") or "",
+                bool(item.get("ok", True)),
+                int(item.get("duration_ms") or 0),
+            )
+
     def _touch_title(self, question: str) -> None:
         conv = store.row("SELECT title FROM conversations WHERE id = ?", (self.conversation_id,))
         if conv and (conv["title"] or "新会话") in ("新会话", "", None):
@@ -293,6 +307,7 @@ class HarnessRuntime:
     # ------------------------------------------------------- 无模型 / 失败回退
     def _finish_rule_based(self, question: str, guard: dict) -> dict:
         out = heuristic.respond(self.workspace_id, self.user, question, self.mode)
+        self._record_rule_trace(out.get("trace", []))
         meta = {
             "engine": "rule",
             "model": None,
@@ -320,6 +335,7 @@ class HarnessRuntime:
 
     def _finish_llm_error(self, question: str, error: str) -> dict:
         out = heuristic.respond(self.workspace_id, self.user, question, self.mode)
+        self._record_rule_trace(out.get("trace", []))
         content = (
             f"模型调用失败：{error}\n\n"
             "已自动切换到内置规则引擎，下面是我用本地数据算出来的结果：\n\n"

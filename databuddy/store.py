@@ -265,6 +265,91 @@ CREATE TABLE IF NOT EXISTS traces (
     created_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS compute_resources (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT DEFAULT '',
+    type TEXT NOT NULL,                            -- job / interactive / platform / realtime
+    engine TEXT DEFAULT '',
+    compute_type TEXT DEFAULT 'CPU',
+    image TEXT DEFAULT 'Standard-S 1.1',
+    cu INTEGER DEFAULT 64,
+    status TEXT DEFAULT 'running',                 -- running / stopped / creating / stopping
+    network TEXT DEFAULT '',
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS model_experiments (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT,
+    name TEXT NOT NULL,
+    framework TEXT DEFAULT 'PyTorch',
+    status TEXT DEFAULT 'success',                 -- running / success / failed
+    metrics TEXT DEFAULT '{}',
+    owner TEXT DEFAULT '',
+    created_at TEXT,
+    updated_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS model_services (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT,
+    name TEXT NOT NULL,
+    model_ref TEXT,
+    version TEXT DEFAULT 'v1',
+    replicas INTEGER DEFAULT 1,
+    status TEXT DEFAULT 'running',                 -- running / stopped
+    endpoint TEXT DEFAULT '',
+    created_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS agents (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT,
+    name TEXT NOT NULL,
+    mode TEXT DEFAULT 'engineering',
+    description TEXT DEFAULT '',
+    prompt TEXT DEFAULT '',
+    tools TEXT DEFAULT '[]',
+    status TEXT DEFAULT 'published',               -- draft / published
+    created_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS apps (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT,
+    name TEXT NOT NULL,
+    type TEXT DEFAULT 'chat',                      -- chat / dashboard / form
+    description TEXT DEFAULT '',
+    entry TEXT DEFAULT '',
+    status TEXT DEFAULT 'online',
+    created_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS buddy_tasks (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT,
+    user_id TEXT,
+    name TEXT NOT NULL,
+    prompt TEXT DEFAULT '',
+    cron TEXT,
+    enabled INTEGER DEFAULT 1,
+    last_run TEXT,
+    created_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS analysis_spaces (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT,
+    name TEXT NOT NULL,
+    description TEXT DEFAULT '',
+    tables TEXT DEFAULT '[]',
+    metrics TEXT DEFAULT '[]',
+    owner TEXT DEFAULT '',
+    created_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT
@@ -275,6 +360,8 @@ CREATE INDEX IF NOT EXISTS idx_columns_table ON columns(table_id);
 CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_traces_conv ON traces(conversation_id, step);
 CREATE INDEX IF NOT EXISTS idx_flow_runs_flow ON flow_runs(flow_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_compute_ws ON compute_resources(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_agents_ws ON agents(workspace_id);
 """
 
 

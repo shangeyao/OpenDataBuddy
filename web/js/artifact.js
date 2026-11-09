@@ -1,6 +1,6 @@
 // 产物渲染：工具结果 → 可视化卡片
 import { fmt } from './api.js';
-import { tableHTML, esc, levelBadge } from './ui.js';
+import { tableHTML, esc } from './ui.js';
 import { chartHTML } from './charts.js';
 
 function sqlBlock(sql) {
@@ -16,11 +16,23 @@ function wrap(title, bodyHTML, extraHead = '') {
   </div>`;
 }
 
-export function artifactHTML(a) {
+export function artifactHTML(a, opts = {}) {
   if (!a || !a.type) return '';
+  const compact = !!opts.compact;
+  const idx = opts.index;
+  const more = compact && idx !== undefined
+    ? `<button class="btn-link" data-artifact="${idx}" style="margin-left:auto">查看明细 →</button>`
+    : '';
   switch (a.type) {
     case 'query': {
       const chart = chartHTML(a.chart, a.columns, a.rows);
+      if (compact) {
+        return `<div class="artifact">
+          <div class="artifact-head"><strong>${esc(a.title ? `${a.title} · 查询结果` : '查询结果')}</strong>
+            <span class="tiny muted">${a.rows ? a.rows.length : 0} 行</span>${more}</div>
+          ${chart ? `<div class="artifact-body" style="padding:10px 14px">${chart}</div>` : ''}
+        </div>`;
+      }
       const table = tableHTML(a.columns, a.rows, { max: 12 });
       return wrap(
         a.title ? `${a.title} · 查询结果` : '查询结果',

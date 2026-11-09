@@ -9,7 +9,7 @@ function compact(n) {
   const abs = Math.abs(v);
   if (abs >= 1e8) return `${(v / 1e8).toFixed(1)}亿`;
   if (abs >= 1e4) return `${(v / 1e4).toFixed(1)}万`;
-  if (abs >= 1000) return v.toLocaleString('zh-CN', { maximumFractionDigits: 0 });
+  if (abs >= 1000) return String(Math.round(v));
   if (Number.isInteger(v)) return String(v);
   return v.toFixed(2);
 }
@@ -51,7 +51,7 @@ function axes(ticks, x0, x1, y0, y1) {
 }
 
 function lineChart(xs, ys, height = 210) {
-  const W = 660, H = height, padL = 56, padR = 14, padT = 14, padB = 26;
+  const W = 660, H = height, padL = 56, padR = 26, padT = 14, padB = 26;
   const x0 = padL, x1 = W - padR, y0 = padT, y1 = H - padB;
   const values = ys.map(num).filter((v) => v !== null);
   const ticks = niceTicks(Math.min(0, ...values), Math.max(...values));
@@ -94,7 +94,7 @@ function lineChart(xs, ys, height = 210) {
 
 function barChart(xs, ys, height = 220) {
   const items = xs.map((x, i) => ({ x, y: num(ys[i]) })).filter((d) => d.y !== null);
-  const W = 660, H = height, padL = 56, padR = 14, padT = 14, padB = 42;
+  const W = 660, H = height, padL = 56, padR = 20, padT = 14, padB = 58;
   const x0 = padL, x1 = W - padR, y0 = padT, y1 = H - padB;
   const ticks = niceTicks(0, Math.max(...items.map((d) => d.y), 1));
   const lo = ticks[0], hi = ticks[ticks.length - 1];
@@ -112,7 +112,7 @@ function barChart(xs, ys, height = 220) {
       return `<g><rect x="${(cx - bw / 2).toFixed(1)}" y="${top.toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}"
         rx="4" fill="${PALETTE[0]}" opacity=".88"><title>${esc(label)}: ${esc(compact(d.y))}</title></rect>
         <text x="${cx.toFixed(1)}" y="${(top - 6).toFixed(1)}" text-anchor="middle" font-size="10" fill="#6b7280">${esc(compact(d.y))}</text>
-        ${showLabel ? `<text x="${cx.toFixed(1)}" y="${H - 22}" text-anchor="end" font-size="10" fill="#9aa0b0" transform="rotate(-22 ${cx.toFixed(1)} ${H - 22})">${esc(label.length > 8 ? label.slice(0, 8) : label)}</text>` : ''}
+        ${showLabel ? `<text x="${cx.toFixed(1)}" y="${H - 30}" text-anchor="end" font-size="10" fill="#9aa0b0" transform="rotate(-24 ${cx.toFixed(1)} ${H - 30})">${esc(label.length > 8 ? label.slice(0, 8) : label)}</text>` : ''}
       </g>`;
     })
     .join('');

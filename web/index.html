@@ -3,79 +3,93 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>OpenDataBuddy · 开源大数据智能体工作台</title>
+<title>大数据智能体工作台 DataBuddy</title>
 <link rel="stylesheet" href="/assets/styles.css" />
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%234f46e5'/%3E%3Cpath d='M20 42V22h10a10 10 0 0 1 0 20H20z' fill='white'/%3E%3Ccircle cx='46' cy='24' r='5' fill='%23a5b4fc'/%3E%3C/svg%3E" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230052d9'/%3E%3Ctext x='16' y='22' font-size='18' text-anchor='middle' fill='white' font-family='sans-serif'%3EB%3C/text%3E%3C/svg%3E" />
 </head>
 <body>
-  <!-- 登录 -->
-  <section id="login-screen" class="login-screen hidden">
-    <div class="login-aside">
-      <div class="brand-lg">
-        <span class="logo-mark">B</span>
-        <div>
-          <h1>OpenDataBuddy</h1>
-          <p>开源版大数据智能体工作台</p>
-        </div>
-      </div>
-      <ul class="login-points">
-        <li><b>DeepSeek Harness 底座</b><span>上下文 / 知识 / 记忆 / 工具 / 护栏 / 轨迹，六层全部本地实现</span></li>
-        <li><b>本地湖仓，无云依赖</b><span>DuckDB 承载 Catalog.Schema.Table 三级命名空间</span></li>
-        <li><b>零商业限制</b><span>无席位、无 CU 计量、无试用期、无地域锁定</span></li>
-        <li><b>本地账号体系</b><span>替代 CAM 子账号与企业实名，开箱即用</span></li>
-      </ul>
-      <p class="login-foot">MIT License · 数据不出本机</p>
-    </div>
-    <div class="login-card">
-      <h2>登录控制台</h2>
-      <p class="muted" id="login-hint">首次启动的默认账号：admin@local / admin123</p>
-      <form id="login-form" autocomplete="on">
-        <label>邮箱<input type="text" name="email" value="admin@local" required /></label>
-        <label>密码<input type="password" name="password" value="admin123" required /></label>
-        <p class="form-error" id="login-error"></p>
-        <button class="btn primary block" type="submit">进入工作台</button>
-      </form>
-      <p class="tiny muted">没有账号？管理员可在「设置 → 成员」添加，或直接使用默认管理员。</p>
-    </div>
-  </section>
 
-  <!-- 主应用 -->
-  <div id="app" class="app hidden">
+<!-- 登录 -->
+<section id="login-screen" class="login-wrap hidden">
+  <div class="login-box">
+    <div class="logo-row">
+      <span class="tb-logo" style="width:28px;height:28px;border-radius:6px;font-size:14px">B</span>
+      <div>
+        <div style="font-size:15px;font-weight:500">大数据智能体工作台</div>
+        <div class="tiny dim">DataBuddy · 开源版</div>
+      </div>
+    </div>
+    <h2>登录控制台</h2>
+    <p class="sub">使用本地账号登录，无需云账号与实名认证</p>
+    <form id="login-form">
+      <div class="field">
+        <label>邮箱 / 账号</label>
+        <input type="text" name="email" value="admin@local" autocomplete="username" />
+      </div>
+      <div class="field">
+        <label>密码</label>
+        <input type="password" name="password" value="admin123" autocomplete="current-password" />
+      </div>
+      <p class="form-error" id="login-error"></p>
+      <button class="btn primary block lg" type="submit">登 录</button>
+    </form>
+    <p class="login-foot">
+      首次启动默认管理员：admin@local / admin123<br />
+      MIT License · 数据完全落在本机
+    </p>
+  </div>
+</section>
+
+<!-- 控制台 -->
+<div id="app" class="hidden">
+  <header class="topbar">
+    <div class="tb-brand">
+      <span class="tb-logo">B</span>
+      <span class="tb-title" id="tb-title">大数据智能体工作台</span>
+    </div>
+    <div class="tb-divider"></div>
+    <a class="tb-link" href="#/workspaces" id="tb-console">工作空间</a>
+    <a class="tb-link" href="#/buddy" id="tb-buddy">Buddy</a>
+    <div class="tb-right">
+      <span class="tb-region" title="本地部署，无地域概念">本地</span>
+      <button class="tb-link" id="tb-docs" title="API 文档">文档</button>
+      <button class="tb-link" id="tb-msg" title="通知">消息</button>
+      <button class="tb-link" id="tb-help" title="帮助">帮助</button>
+      <div class="tb-avatar" id="user-menu">管</div>
+    </div>
+  </header>
+
+  <div class="shell">
     <aside class="sidebar">
-      <div class="brand">
-        <span class="logo-mark sm">B</span>
-        <div class="brand-text">
-          <strong>OpenDataBuddy</strong>
-          <span id="ws-name" class="tiny muted">…</span>
-        </div>
-      </div>
-      <nav id="nav" class="nav"></nav>
-      <div class="sidebar-foot">
-        <button class="ws-switch" id="ws-switch" title="切换工作空间">
-          <span class="dot"></span><span id="ws-current">默认空间</span>
+      <div class="ws-block">
+        <button class="ws-picker" id="ws-picker">
+          <span class="dot" style="width:6px;height:6px;border-radius:50%;background:#2ba471"></span>
+          <span class="name" id="ws-name">未选择空间</span>
+          <span class="caret">▾</span>
         </button>
-        <div class="user-chip" id="user-chip">
-          <span class="avatar" id="user-avatar">A</span>
-          <div class="user-meta"><strong id="user-name">…</strong><span class="tiny muted" id="user-role"></span></div>
-          <button class="icon-btn" id="logout" title="退出登录">⎋</button>
+      </div>
+      <nav class="nav" id="nav"></nav>
+    </aside>
+
+    <main class="main">
+      <div class="page-head" id="page-head">
+        <div class="crumb" id="crumb"></div>
+        <div class="head-main">
+          <div>
+            <h1 id="page-title">工作空间</h1>
+            <div class="desc" id="page-desc"></div>
+          </div>
+          <div class="head-actions" id="page-actions"></div>
         </div>
       </div>
-    </aside>
-    <main class="main">
-      <header class="topbar">
-        <div>
-          <h2 id="page-title">总览</h2>
-          <p class="tiny muted" id="page-sub"></p>
-        </div>
-        <div class="topbar-actions" id="page-actions"></div>
-      </header>
-      <div class="page" id="page"></div>
+      <div class="page-body" id="page"></div>
     </main>
   </div>
+</div>
 
-  <div id="toast" class="toast hidden"></div>
-  <div id="modal-root"></div>
+<div id="toast" class="toast hidden"></div>
+<div id="modal-root"></div>
 
-  <script type="module" src="/assets/js/app.js"></script>
+<script type="module" src="/assets/js/app.js"></script>
 </body>
 </html>

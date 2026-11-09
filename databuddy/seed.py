@@ -88,6 +88,9 @@ def seed_all() -> None:
     _build_flow(ws_id)
     _build_dashboard(ws_id)
     _build_quality_rules(ws_id)
+    _build_platform(ws_id)
+    _build_spaces(ws_id)
+    _build_governance(ws_id)
 
     store.set_setting("seeded_at", store.now())
 
@@ -172,13 +175,14 @@ def _build_tables(ws_id: str, schema_id: str) -> None:
     start = date.today() - timedelta(days=179)
     for i in range(1, 5201):
         d = start + timedelta(days=rnd.randint(0, 179))
-        # 制造一个近 7 天的下滑，便于演示「异动归因」
-        if (date.today() - d).days < 7 and rnd.random() < 0.45:
-            continue
+        # 制造一个近 7 天的客单价下滑（而非抽掉订单），便于演示「异动归因」
+        recent = (date.today() - d).days < 7
         cust = rnd.choice(customers)
         prod = rnd.choice(products)
         qty = rnd.choice([1, 1, 1, 2, 2, 3])
         price = round(prod[4] * rnd.uniform(0.82, 1.0), 2)
+        if recent:
+            price = round(price * 0.52, 2)
         amount = round(price * qty, 2)
         status = "refund" if rnd.random() < 0.045 else "paid"
         orders.append(
@@ -510,6 +514,173 @@ def _build_quality_rules(ws_id: str) -> None:
                 "created_at": store.now(),
             },
         )
+
+
+def _build_platform(ws_id: str) -> None:
+    """计算资源、模型、智能体、应用、Buddy 定时任务 —— 对齐控制台的平台级模块。"""
+    resources = [
+        ("demo_job_cluster", "POC 作业集群，跑 Notebook 与 Python 任务", "job", "Spark", 64, "running"),
+        ("demo_interactive", "交互式查询集群，供 SQL 探索与看板使用", "interactive", "Spark", 32, "stopped"),
+        ("demo_platform", "平台集群，承载离线接入与连通性测试", "platform", "平台服务", 16, "running"),
+        ("demo_realtime", "实时集群，承载 Flink 实时接入", "realtime", "Flink", 32, "running"),
+    ]
+    for name, desc, rtype, engine, cu, status in resources:
+        store.insert(
+            "compute_resources",
+            {
+                "id": store.new_id(),
+                "workspace_id": ws_id,
+                "name": name,
+                "description": desc,
+                "type": rtype,
+                "engine": engine,
+                "compute_type": "CPU",
+                "image": "Standard-S 1.1",
+                "cu": cu,
+                "status": status,
+                "network": "vpc-demo / subnet-1" if rtype in ("platform", "realtime") else "",
+                "created_at": store.now(),
+            },
+        )
+
+    experiments = [
+        ("churn_prediction_lgb", "LightGBM", "success", {"auc": 0.862, "f1": 0.74, "样本": 52000}),
+        ("gmv_forecast_prophet", "Prophet", "success", {"mape": 0.081, "horizon": 30}),
+        ("repurchase_uplift", "XGBoost", "running", {"uplift@10%": 0.127}),
+    ]
+    for name, fw, status, metrics in experiments:
+        store.insert(
+            "model_experiments",
+            {
+                "id": store.new_id(),
+                "workspace_id": ws_id,
+                "name": name,
+                "framework": fw,
+                "status": status,
+                "metrics": json.dumps(metrics, ensure_ascii=False),
+                "owner": "管理员",
+                "created_at": store.now(),
+                "updated_at": store.now(),
+            },
+        )
+
+    services = [
+        ("churn_score_api", "churn_prediction_lgb", "v3", 2, "running", "/svc/churn-score"),
+        ("gmv_forecast_api", "gmv_forecast_prophet", "v1", 1, "stopped", "/svc/gmv-forecast"),
+    ]
+    for name, model_ref, version, replicas, status, endpoint in services:
+        store.insert(
+            "model_services",
+            {
+                "id": store.new_id(),
+                "workspace_id": ws_id,
+                "name": name,
+                "model_ref": model_ref,
+                "version": version,
+                "replicas": replicas,
+                "status": status,
+                "endpoint": endpoint,
+                "created_at": store.now(),
+            },
+        )
+
+    agents = [
+        ("数仓建设助手", "engineering", "从一句需求生成分层方案、DDL、ETL 与调度",
+         "你是数据工程专家。先用 list_tables 看资产，再给分层方案，SQL 必须可执行。"),
+        ("合规治理官", "governance", "敏感字段扫描、分级打标与质量规则巡检",
+         "你是数据治理专家。每次判定都要给证据与置信度，按 L1~L4 分级。"),
+        ("经营分析官", "analysis", "问数、异动归因、日报与看板生成",
+         "你是数据分析专家。结论先行，给对比、构成、趋势三类依据。"),
+    ]
+    for name, mode, desc, prompt in agents:
+        store.insert(
+            "agents",
+            {
+                "id": store.new_id(),
+                "workspace_id": ws_id,
+                "name": name,
+                "mode": mode,
+                "description": desc,
+                "prompt": prompt,
+                "tools": json.dumps(["list_tables", "describe_table", "run_query", "query_metric"], ensure_ascii=False),
+                "status": "published",
+                "created_at": store.now(),
+            },
+        )
+
+    apps = [
+        ("门店经营速览", "dashboard", "面向店长的经营看板，嵌出到企业微信", "/dashboards", "online"),
+        ("供应商对账助手", "chat", "对账差异问询，只读访问订单与结算表", "/buddy", "online"),
+    ]
+    for name, atype, desc, entry, status in apps:
+        store.insert(
+            "apps",
+            {
+                "id": store.new_id(),
+                "workspace_id": ws_id,
+                "name": name,
+                "type": atype,
+                "description": desc,
+                "entry": entry,
+                "status": status,
+                "created_at": store.now(),
+            },
+        )
+
+    tasks = [
+        ("每日经营早报", "汇总昨日 GMV、订单量、退款率，与上周同期对比，生成早报", "0 9 * * *"),
+        ("每周质量巡检", "对所有已启用质量规则跑一遍，汇总未通过项并给出修复建议", "0 8 * * 1"),
+    ]
+    for name, prompt, cron in tasks:
+        store.insert(
+            "buddy_tasks",
+            {
+                "id": store.new_id(),
+                "workspace_id": ws_id,
+                "user_id": None,
+                "name": name,
+                "prompt": prompt,
+                "cron": cron,
+                "enabled": 1,
+                "last_run": None,
+                "created_at": store.now(),
+            },
+        )
+
+
+def _build_spaces(ws_id: str) -> None:
+    store.insert(
+        "analysis_spaces",
+        {
+            "id": store.new_id(),
+            "workspace_id": ws_id,
+            "name": "零售经营分析",
+            "description": "面向业务方的经营分析空间，绑定订单事实表与核心指标",
+            "tables": json.dumps(["demo.retail.fact_orders", "demo.retail.dim_channel", "demo.retail.dim_product"], ensure_ascii=False),
+            "metrics": json.dumps(["gmv", "order_cnt", "avg_order_value", "refund_rate"], ensure_ascii=False),
+            "owner": "管理员",
+            "created_at": store.now(),
+        },
+    )
+
+
+def _build_governance(ws_id: str) -> None:
+    """示例数据先跑一遍敏感扫描并落标注，让治理/安全/目录三页开箱有内容。"""
+    from . import governance
+
+    try:
+        scan = governance.scan_table(ws_id, "demo.retail.dim_customer")
+        governance.apply_tags(ws_id, "demo.retail.dim_customer", scan["findings"])
+    except Exception:  # noqa: BLE001
+        pass
+    # 质量规则先跑一遍，概览页与质量页开箱即有结果
+    for rule in store.rows(
+        "SELECT * FROM quality_rules WHERE workspace_id = ?", (ws_id,)
+    ):
+        try:
+            governance.run_rule(ws_id, rule)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def ensure_admin() -> None:
