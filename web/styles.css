@@ -316,7 +316,7 @@ table.tbl .cell-sub { font-size: 12px; color: var(--text-3); margin-top: 2px; }
 
 /* ------------------------------------------------------------------ 其它 */
 .empty {
-  padding: 56px 20px; text-align: center; color: var(--text-3); font-size: 13px;
+  padding: 44px 20px; text-align: center; color: var(--text-3); font-size: 13px;
 }
 .empty .icon { opacity: .18; margin-bottom: 10px; display: flex; justify-content: center; }
 .empty strong { display: block; color: var(--text-2); font-size: 13px; font-weight: 500; margin-bottom: 4px; }

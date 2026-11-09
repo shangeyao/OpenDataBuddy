@@ -438,7 +438,7 @@ def _build_flow(ws_id: str) -> None:
             "nodes": json.dumps(nodes, ensure_ascii=False),
             "edges": json.dumps([["n1", "n2"], ["n2", "n3"]], ensure_ascii=False),
             "cron": "0 7 * * *",
-            "enabled": 0,
+            "enabled": 1,
             "created_at": store.now(),
             "updated_at": store.now(),
         },
