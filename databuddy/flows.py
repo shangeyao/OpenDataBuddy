@@ -292,6 +292,15 @@ class Scheduler:
                 run_flow_by_id(flow["id"], trigger="schedule")
             except Exception:  # noqa: BLE001
                 pass
+        # Buddy 定时任务（Agent 对话型）
+        if self._last_minute.get("__buddy__") != stamp:
+            self._last_minute["__buddy__"] = stamp
+            try:
+                from . import buddy_tasks
+
+                buddy_tasks.run_due(when)
+            except Exception:  # noqa: BLE001
+                pass
 
 
 scheduler = Scheduler()

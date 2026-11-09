@@ -7,9 +7,10 @@ from __future__ import annotations
 
 import json
 import shutil
+from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from .. import catalog, config, store
@@ -400,7 +401,37 @@ def delete_task(task_id: str, ctxd: dict = Depends(ctx)) -> dict:
     store.execute(
         "DELETE FROM buddy_tasks WHERE id = ? AND workspace_id = ?", (task_id, ctxd["workspace_id"])
     )
+    store.execute("DELETE FROM buddy_task_runs WHERE task_id = ?", (task_id,))
     return {"ok": True}
+
+
+@router.post("/buddy-tasks/{task_id}/run")
+def run_task_now(task_id: str, ctxd: dict = Depends(ctx)) -> dict:
+    from .. import buddy_tasks
+
+    row = store.row(
+        "SELECT * FROM buddy_tasks WHERE id = ? AND workspace_id = ?", (task_id, ctxd["workspace_id"])
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    try:
+        return {"run": buddy_tasks.run_task(task_id)}
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"执行失败：{exc}") from exc
+
+
+@router.get("/buddy-tasks/{task_id}/runs")
+def task_runs(task_id: str, ctxd: dict = Depends(ctx)) -> dict:
+    from .. import buddy_tasks
+
+    return {"runs": buddy_tasks.runs_of(task_id)}
+
+
+@router.get("/buddy-runs")
+def recent_task_runs(ctxd: dict = Depends(ctx)) -> dict:
+    from .. import buddy_tasks
+
+    return {"runs": buddy_tasks.recent_runs(ctxd["workspace_id"])}
 
 
 # ---------------------------------------------------------------- 分析空间
@@ -455,6 +486,188 @@ def delete_space(space_id: str, ctxd: dict = Depends(ctx)) -> dict:
         (space_id, ctxd["workspace_id"]),
     )
     return {"ok": True}
+
+
+# -------------------------------------------------------------------- 卷管理
+
+
+@router.get("/volumes")
+def list_volumes(ctxd: dict = Depends(ctx)) -> dict:
+    rows = store.rows(
+        "SELECT * FROM volumes WHERE workspace_id = ? ORDER BY created_at DESC", (ctxd["workspace_id"],)
+    )
+    return {"volumes": rows}
+
+
+@router.post("/volumes/upload")
+async def upload_volume(
+    file: UploadFile = File(...),
+    target: str = Form("demo.retail"),
+    volume: str = Form("raw_files"),
+    ctxd: dict = Depends(ctx),
+) -> dict:
+    import re
+
+    parts = [p for p in target.replace('"', "").split(".") if p]
+    if len(parts) != 2:
+        raise HTTPException(status_code=400, detail="目标格式应为 catalog.schema")
+    safe_volume = re.sub(r"[^\w\u4e00-\u9fa5-]", "_", volume)[:48] or "raw_files"
+    dest_dir = config.VOLUME_DIR / parts[0] / parts[1] / safe_volume
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    name = file.filename or "file.bin"
+    safe_name = re.sub(r"[^\w\u4e00-\u9fa5.\-]", "_", name)
+    dest = dest_dir / f"{store.new_id()[:8]}_{safe_name}"
+    payload = await file.read()
+    dest.write_bytes(payload)
+
+    existing = store.row(
+        "SELECT * FROM volumes WHERE workspace_id = ? AND catalog = ? AND schema = ? AND name = ?",
+        (ctxd["workspace_id"], parts[0], parts[1], safe_volume),
+    )
+    files = [f for f in dest_dir.rglob("*") if f.is_file()]
+    total = sum(f.stat().st_size for f in files)
+    if existing:
+        store.update("volumes", existing["id"], {"file_count": len(files), "size_bytes": total})
+        volume_id = existing["id"]
+    else:
+        volume_id = store.new_id()
+        store.insert(
+            "volumes",
+            {
+                "id": volume_id,
+                "workspace_id": ctxd["workspace_id"],
+                "catalog": parts[0],
+                "schema": parts[1],
+                "name": safe_volume,
+                "path": str(dest_dir),
+                "file_count": len(files),
+                "size_bytes": total,
+                "created_at": store.now(),
+            },
+        )
+    store.audit(
+        ctxd["workspace_id"], ctxd["user"]["id"], "upload_volume",
+        f"{parts[0]}.{parts[1]}.{safe_volume}", {"file": name, "bytes": len(payload)},
+    )
+    return {"ok": True, "volume_id": volume_id, "file": dest.name, "files": len(files), "size": total}
+
+
+@router.get("/volumes/{volume_id}/files")
+def volume_files(volume_id: str, ctxd: dict = Depends(ctx)) -> dict:
+    row = store.row(
+        "SELECT * FROM volumes WHERE id = ? AND workspace_id = ?", (volume_id, ctxd["workspace_id"])
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="卷不存在")
+    files = []
+    base = Path(row["path"])
+    if base.exists():
+        for f in sorted(base.rglob("*")):
+            if f.is_file():
+                stat = f.stat()
+                files.append(
+                    {
+                        "name": f.name,
+                        "size": stat.st_size,
+                        "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds"),
+                    }
+                )
+    return {"volume": row, "files": files}
+
+
+@router.delete("/volumes/{volume_id}")
+def delete_volume(volume_id: str, ctxd: dict = Depends(ctx)) -> dict:
+    row = store.row(
+        "SELECT * FROM volumes WHERE id = ? AND workspace_id = ?", (volume_id, ctxd["workspace_id"])
+    )
+    if row:
+        shutil.rmtree(row["path"], ignore_errors=True)
+        store.execute("DELETE FROM volumes WHERE id = ?", (volume_id,))
+    return {"ok": True}
+
+
+# ------------------------------------------------------- 通知渠道与 Git 连接
+
+
+class NotifyIn(BaseModel):
+    wecom: str = ""
+    email: str = ""
+    webhook: str = ""
+    enabled: bool = True
+
+
+class GitIn(BaseModel):
+    url: str = ""
+    branch: str = "main"
+    username: str = ""
+
+
+@router.get("/settings/integrations")
+def get_integrations(ctxd: dict = Depends(ctx)) -> dict:
+    return {
+        "notify": store.get_json_setting("notify", {"wecom": "", "email": "", "webhook": "", "enabled": True}),
+        "git": store.get_json_setting("git", {"url": "", "branch": "main", "username": ""}),
+        "workspace_rule": store.get_setting("workspace_rule", ""),
+    }
+
+
+@router.put("/settings/notify")
+def save_notify(payload: NotifyIn, ctxd: dict = Depends(ctx)) -> dict:
+    store.set_setting("notify", json.dumps(payload.model_dump(), ensure_ascii=False))
+    store.audit(ctxd["workspace_id"], ctxd["user"]["id"], "update_notify")
+    return {"ok": True}
+
+
+@router.post("/settings/notify/test")
+def test_notify(payload: NotifyIn) -> dict:
+    import httpx
+
+    targets = []
+    if payload.wecom:
+        targets.append(("企业微信", payload.wecom))
+    if payload.webhook:
+        targets.append(("Webhook", payload.webhook))
+    if not targets:
+        return {"ok": False, "message": "先填写企业微信机器人地址或 Webhook；邮件渠道需要 SMTP 配置（v0.3）"}
+    results = []
+    for label, url in targets:
+        try:
+            body = {"msgtype": "text", "text": {"content": "OpenDataBuddy 测试消息"}} if "qyapi" in url else {"text": "OpenDataBuddy 测试消息"}
+            with httpx.Client(timeout=6) as client:
+                resp = client.post(url, json=body)
+            results.append(f"{label} → HTTP {resp.status_code}")
+        except Exception as exc:  # noqa: BLE001
+            results.append(f"{label} → {type(exc).__name__}: {exc}")
+    ok = all(("200" in r or "204" in r) for r in results)
+    return {"ok": ok, "message": "；".join(results)}
+
+
+@router.put("/settings/git")
+def save_git(payload: GitIn, ctxd: dict = Depends(ctx)) -> dict:
+    store.set_setting("git", json.dumps(payload.model_dump(), ensure_ascii=False))
+    store.audit(ctxd["workspace_id"], ctxd["user"]["id"], "update_git")
+    return {"ok": True}
+
+
+@router.post("/settings/git/test")
+def test_git(payload: GitIn) -> dict:
+    import subprocess
+
+    if not payload.url:
+        return {"ok": False, "message": "请填写仓库地址"}
+    try:
+        out = subprocess.run(
+            ["git", "ls-remote", "--heads", payload.url],
+            capture_output=True, text=True, timeout=10,
+        )
+    except FileNotFoundError:
+        return {"ok": False, "message": "本机未安装 git"}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "message": "连接超时（10s），检查网络或仓库地址"}
+    if out.returncode == 0:
+        heads = [line.split("refs/heads/")[-1] for line in out.stdout.splitlines() if "refs/heads/" in line]
+        return {"ok": True, "message": f"连接成功，{len(heads)} 个分支", "branches": heads[:10]}
+    return {"ok": False, "message": (out.stderr or out.stdout).strip()[:200]}
 
 
 # ---------------------------------------------------------------- 用量统计

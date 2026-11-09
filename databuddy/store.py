@@ -350,6 +350,30 @@ CREATE TABLE IF NOT EXISTS analysis_spaces (
     created_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS buddy_task_runs (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    workspace_id TEXT,
+    status TEXT DEFAULT 'success',                 -- success / failed
+    summary TEXT DEFAULT '',
+    conversation_id TEXT,
+    error TEXT DEFAULT '',
+    started_at TEXT,
+    finished_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS volumes (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT,
+    catalog TEXT NOT NULL,
+    schema TEXT NOT NULL,
+    name TEXT NOT NULL,
+    path TEXT NOT NULL,
+    file_count INTEGER DEFAULT 0,
+    size_bytes INTEGER DEFAULT 0,
+    created_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT

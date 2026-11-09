@@ -308,24 +308,37 @@ export async function renderMembers(page, ctx) {
 /* -------------------------------------------------------- 工作空间设置 */
 export async function renderSettings(page, ctx) {
   page.innerHTML = loading();
-  const settings = await api.get('/settings');
+  const [settings, integ] = await Promise.all([
+    api.get('/settings'),
+    api.get('/settings/integrations').catch(() => ({ notify: {}, git: {} })),
+  ]);
+  const notify = integ.notify || {};
+  const git = integ.git || {};
 
   page.innerHTML = `
     <div class="grid-2" style="align-items:start">
       <div class="col" style="gap:16px">
-        ${card('通知渠道', `<div class="col" style="gap:10px">
-          ${[['企业微信机器人', '未配置'], ['邮件', '未配置'], ['Webhook', '未配置']].map(([k, v]) => `
-            <div class="row" style="justify-content:space-between">
-              <span>${k}</span><span class="tag outline">${v}</span>
-            </div>`).join('')}
-          <div class="hint">任务失败、质量未通过、额度告警可推送到这些渠道（v0.2 开放配置）。</div>
-        </div>`)}
-        ${card('Git 连接', `<div class="col" style="gap:10px">
-          <div class="field"><label>仓库地址</label><input placeholder="https://github.com/your/repo.git" /></div>
-          <div class="field"><label>分支</label><input placeholder="main" value="main" /></div>
-          <button class="btn sm">连接</button>
-          <div class="hint">用于 Studio 文件的版本管理（Git 原生集成）。</div>
-        </div>`)}
+        ${card('通知渠道', `
+          <div class="field"><label>企业微信机器人</label>
+            <input id="n-wecom" value="${esc(notify.wecom || '')}" placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=..." /></div>
+          <div class="field"><label>Webhook</label>
+            <input id="n-hook" value="${esc(notify.webhook || '')}" placeholder="https://your-domain/alert" /></div>
+          <div class="field"><label>邮件</label>
+            <input id="n-email" value="${esc(notify.email || '')}" placeholder="data-team@example.com" disabled />
+            <div class="hint">邮件需配置 SMTP，v0.3 开放；当前可先用企业微信 / Webhook</div></div>
+          <div class="row"><button class="btn primary" id="n-save">保存</button>
+            <button class="btn" id="n-test">发送测试消息</button>
+            <span id="n-out" class="tiny"></span></div>`,
+          { sub: '任务失败、质量未通过、定时任务完成时推送' })}
+
+        ${card('Git 连接', `
+          <div class="field"><label>仓库地址</label>
+            <input id="g-url" value="${esc(git.url || '')}" placeholder="https://github.com/your/repo.git" /></div>
+          <div class="field"><label>分支</label><input id="g-branch" value="${esc(git.branch || 'main')}" /></div>
+          <div class="row"><button class="btn primary" id="g-save">保存</button>
+            <button class="btn" id="g-test">测试连接</button>
+            <span id="g-out" class="tiny"></span></div>
+          <div class="hint" style="margin-top:10px">用于 Studio 文件的版本管理；测试会用 <code class="inline">git ls-remote</code> 实际探测。</div>`)}
       </div>
       <div class="col" style="gap:16px">
         ${card('workspace_rule.md', `<div class="tiny dim" style="margin-bottom:8px">
@@ -341,19 +354,76 @@ export async function renderSettings(page, ctx) {
           ['名称', ctx.ws?.name || '-'],
           ['描述', ctx.ws?.description || '-'],
           ['我的角色', ctx.ws?.role === 'admin' ? '空间管理员' : '空间成员'],
+          ['数据目录', `<span class="mono tiny">${esc(settings.platform.data_dir)}</span>`],
         ]))}
       </div>
     </div>`;
+
+  const setOut = (id, ok, message) => {
+    const node = page.querySelector(id);
+    node.className = `tiny ${ok ? '' : ''}`;
+    node.innerHTML = `<span class="tag ${ok ? 'green' : 'red'}">${ok ? '成功' : '失败'}</span>
+      <span style="margin-left:6px">${esc(message)}</span>`;
+  };
+
+  page.querySelector('#n-save').addEventListener('click', async (e) => {
+    e.target.disabled = true;
+    try {
+      await api.put('/settings/notify', {
+        wecom: page.querySelector('#n-wecom').value.trim(),
+        webhook: page.querySelector('#n-hook').value.trim(),
+        email: page.querySelector('#n-email').value.trim(),
+        enabled: true,
+      });
+      toast('通知渠道已保存', 'ok');
+    } catch (err) { toast(err.message, 'err'); }
+    finally { e.target.disabled = false; }
+  });
+  page.querySelector('#n-test').addEventListener('click', async (e) => {
+    e.target.disabled = true;
+    try {
+      const out = await api.post('/settings/notify/test', {
+        wecom: page.querySelector('#n-wecom').value.trim(),
+        webhook: page.querySelector('#n-hook').value.trim(),
+        email: page.querySelector('#n-email').value.trim(),
+        enabled: true,
+      });
+      setOut('#n-out', out.ok, out.message);
+    } catch (err) { setOut('#n-out', false, err.message); }
+    finally { e.target.disabled = false; }
+  });
+
+  page.querySelector('#g-save').addEventListener('click', async (e) => {
+    e.target.disabled = true;
+    try {
+      await api.put('/settings/git', {
+        url: page.querySelector('#g-url').value.trim(),
+        branch: page.querySelector('#g-branch').value.trim() || 'main',
+        username: '',
+      });
+      toast('Git 连接已保存', 'ok');
+    } catch (err) { toast(err.message, 'err'); }
+    finally { e.target.disabled = false; }
+  });
+  page.querySelector('#g-test').addEventListener('click', async (e) => {
+    e.target.disabled = true;
+    try {
+      const out = await api.post('/settings/git/test', {
+        url: page.querySelector('#g-url').value.trim(),
+        branch: page.querySelector('#g-branch').value.trim() || 'main',
+        username: '',
+      });
+      setOut('#g-out', out.ok, out.message);
+    } catch (err) { setOut('#g-out', false, err.message); }
+    finally { e.target.disabled = false; }
+  });
 
   page.querySelector('#save-rule').addEventListener('click', async (e) => {
     e.target.disabled = true;
     try {
       await api.put('/settings', { workspace_rule: page.querySelector('#rule').value });
       toast('已保存', 'ok');
-    } catch (err) {
-      toast(err.message, 'err');
-    } finally {
-      e.target.disabled = false;
-    }
+    } catch (err) { toast(err.message, 'err'); }
+    finally { e.target.disabled = false; }
   });
 }

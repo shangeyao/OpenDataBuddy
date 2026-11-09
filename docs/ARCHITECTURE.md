@@ -210,6 +210,13 @@ approvals 表 ← { state: 完整 messages 快照, call: {name, args, id} }
 
 ---
 
+## 调度与外部接入
+
+- **调度器**：`flows.Scheduler` 每 20 秒轮询一次，同时驱动两类任务 —— 工作流 DAG（`flows`）
+  与 Buddy 定时任务（`buddy_tasks`）。后者会新建一条会话再跑 Agent，所以"早报"留下的是可回看的完整过程。
+- **MCP**：`python -m databuddy.mcp` 起一个 stdio JSON-RPC 进程，复用同一份工具注册表与护栏。
+  写操作在 stdio 下无法人工确认，因此直接拒绝 —— 宁可少做一步，也不越过审批。
+
 ## 已知限制
 
 | 限制 | 影响 | 计划 |
@@ -219,3 +226,4 @@ approvals 表 ← { state: 完整 messages 快照, call: {name, args, id} }
 | 无流式输出 | 等模型整段返回 | v0.2 加 SSE |
 | 向量检索为关键词 | 同义改写召回弱 | 可选接 pgvector |
 | cron 为 5 段轮询 | 最小粒度 1 分钟 | 够用，不改进 |
+| MCP 为 stdio 单进程 | 不支持多客户端共享 | 每客户端起一个进程即可 |

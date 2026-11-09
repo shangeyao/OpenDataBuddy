@@ -85,7 +85,7 @@ python run.py
 | 能力 | 你能做什么 | 实现要点 |
 | --- | --- | --- |
 | **Buddy** | 三场景（开发/治理/分析）× Agent/Ask 双模式；工具轨迹、产物预览、高危操作确认、@ 引用、Skills 选择、定时任务 | DeepSeek function calling + Harness 六层 |
-| **数据接入** | CSV / JSON / Parquet / **XLSX** 上传自动建表；SQL 建表 | 类型推断；XLSX 标准库解析 |
+| **数据接入** | CSV / JSON / Parquet / **XLSX** 上传自动建表；SQL 建表；**文件到卷**（非结构化落盘） | 类型推断；XLSX 标准库解析 |
 | **开发工作台** | 文件树 + SQL/Python 编辑器 + 运行结果 + AI 助手 | 复用 SQL 引擎 |
 | **工作流编排** | 顺序 DAG、cron 调度、节点级日志、运行/重跑 | 拓扑执行 + 20 秒轮询调度 |
 | **发布管理** | bundle.yaml 校验与多环境发布（dev/staging/prod） | 本地执行，结构对齐 CI/CD |
@@ -99,12 +99,46 @@ python run.py
 | **数据目录** | Catalog.Schema.Table、字段、标签、样例、血缘 | 元数据 SQLite + DuckDB schema |
 | **Agent 安全防护** | 注入检测、三要素拦截、高危 SQL 白名单、PII 脱敏 | 四道防线可逐层追溯 |
 | **智能体/应用** | 自定义 Agent（模式 + 提示词 + 工具白名单）、低代码应用 | 与 Buddy 共用工具集 |
-| **MCP 服务** | 工具清单、接入配置、安全约束 | 20 个工具暴露为 MCP 工具 |
+| **MCP 服务** | 工具清单、接入配置、安全约束 | **独立 stdio 服务进程**，13 个只读/写入工具 |
 | **模型列表** | 多模型 Endpoint、切换与连通测试 | OpenAI 兼容协议 |
 | **数据源管理** | 注册连接、连通性测试、关联任务 | 文件/SQLite/PG/MySQL 探测 |
 | **计算资源** | 四类集群、CU 配额、启停、网络设置 | 本地实体，无计费 |
 | **成员与权限** | 空间成员、双角色（管理员/成员） | 无席位限制 |
 | **平台设置** | 模型接入、本地用量、审计、轨迹评测、工具清单 | 替代原「服务订阅」 |
+| **工作空间设置** | 通知渠道（企微/Webhook）、Git 连接（真实 ls-remote 探测）、workspace_rule.md | 配置持久化并可用 |
+| **Buddy 定时任务** | cron 到期自动建会话并跑 Agent，记录状态与摘要，可回看会话 | 与工作流共用调度器 |
+
+---
+
+## MCP 接入（让外部 Agent 复用同一套工具）
+
+平台把 13 个工具暴露成标准 MCP 工具，外部 Agent 与人在同一条调用链路上，共用护栏与审计。
+
+```bash
+# 先登录控制台，从浏览器 localStorage 取 odb.token
+export DATABUDDY_TOKEN=你的token
+export DATABUDDY_WORKSPACE_ID=可选，默认取第一个空间
+python -m databuddy.mcp        # stdio JSON-RPC 2.0
+```
+
+Claude Desktop / Cursor 配置：
+
+```json
+{
+  "mcpServers": {
+    "opendatabuddy": {
+      "command": "python",
+      "args": ["-m", "databuddy.mcp"],
+      "cwd": "D:/Project/OpenDataBuddy",
+      "env": { "DATABUDDY_TOKEN": "你的token" }
+    }
+  }
+}
+```
+
+已实现 `initialize` / `tools/list` / `tools/call`。写操作若命中「三要素」（不可信输入 + 改状态 + 敏感数据），
+stdio 场景无法人工确认，服务会直接拒绝并提示到控制台操作 —— 宁可不做，也不越权。
+
 
 ---
 
@@ -222,9 +256,9 @@ python run.py --reload          # 后端热重载
 
 ## 路线图
 
-- [ ] v0.3：流式输出（SSE）、字段级血缘、卷管理界面
-- [ ] v0.3：通知渠道（企业微信 / 邮件 / Webhook）、漂移检测
-- [ ] v0.4：独立 MCP server 进程、OIDC / LDAP 单点登录
+- [x] v0.2：独立 MCP server 进程、卷管理、通知渠道、Git 连接、Buddy 定时任务执行
+- [ ] v0.3：流式输出（SSE）、字段级血缘、邮件 SMTP、漂移检测
+- [ ] v0.4：OIDC / LDAP 单点登录、多工作空间资源隔离
 
 ## License
 

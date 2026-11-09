@@ -29,6 +29,7 @@ DATA_DIR = Path(os.environ.get("DATABUDDY_DATA_DIR", ROOT / "data")).resolve()
 DB_PATH = DATA_DIR / "metadata.db"
 WAREHOUSE_PATH = DATA_DIR / "warehouse.duckdb"
 UPLOAD_DIR = DATA_DIR / "uploads"
+VOLUME_DIR = DATA_DIR / "volumes"
 WEB_DIR = ROOT / "web"
 
 HOST = os.environ.get("DATABUDDY_HOST", "127.0.0.1")
@@ -52,5 +53,5 @@ def secret_key() -> str:
 
 
 def ensure_dirs() -> None:
-    for d in (DATA_DIR, UPLOAD_DIR):
+    for d in (DATA_DIR, UPLOAD_DIR, VOLUME_DIR):
         d.mkdir(parents=True, exist_ok=True)

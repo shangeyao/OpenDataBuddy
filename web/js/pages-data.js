@@ -265,12 +265,76 @@ GROUP BY 1</textarea>
         }
       });
     },
-    volume: () => {
-      body.innerHTML = card('文件到卷 / 批量到卷', `<div class="tiny muted" style="line-height:2">
-        用于存放图片、PDF、日志等非结构化文件。开源版把 Volume 落成本地目录 <span class="mono">data/uploads/</span>。<br>
-        · 文件到卷：单个或多个文件直接入卷，保留原文件名<br>
-        · 批量到卷：从 FTP / S3 / 本地目录同步，保留目录结构<br><br>
-        当前版本未开放在线卷管理界面，可先用「文件到表」把结构化数据落地。</div>`);
+    volume: async () => {
+      body.innerHTML = loading();
+      const { volumes } = await api.get('/volumes');
+      body.innerHTML = `<div class="grid-2" style="grid-template-columns:1fr 360px;align-items:start">
+        <div class="col" style="gap:16px">
+          ${card('卷列表', volumes.length
+            ? tableHTML(['卷名', '位置', '文件数', '大小', '操作'], volumes.map((v) => [
+                v.name, `${v.catalog}.${v.schema}`, String(v.file_count), fmt.bytes(v.size_bytes),
+                `<a href="javascript:void 0" class="btn-link" data-vfiles="${v.id}">查看</a> <a href="javascript:void 0" class="btn-link danger" data-vdel="${v.id}">删除</a>`,
+              ]), { raw: [4] })
+            : emptyState('还没有卷', '把图片、PDF、日志等非结构化文件上传到卷'), { sub: 'Volume 存放非结构化文件，落盘在 data/volumes/', flush: true })}
+        </div>
+        <div class="col" style="gap:16px">
+          ${card('上传到卷', `
+            <div class="field"><label>目标位置</label>
+              <select id="v-target">${targets.map((t) => `<option>${esc(t)}</option>`).join('')}</select></div>
+            <div class="field"><label>卷名</label><input id="v-name" value="raw_files" />
+              <div class="hint">同一卷下多次上传会累积，保留原文件名</div></div>
+            <div class="field"><label>选择文件</label><input type="file" id="v-file" multiple /></div>
+            <button class="btn primary" id="v-upload">上传</button>
+            <div id="v-result" class="mt-12"></div>`)}
+          ${card('说明', `<div class="tiny muted" style="line-height:1.9">
+            文件到卷用于图片、PDF、日志等非结构化数据；结构化数据请用「文件到表」。<br>
+            批量到卷（FTP / S3）依赖外部连接，开源版未实现。</div>`)}
+        </div>
+      </div>`;
+
+      body.querySelector('#v-upload').addEventListener('click', async (e) => {
+        const input = body.querySelector('#v-file');
+        if (!input.files.length) return toast('请选择文件', 'err');
+        e.target.disabled = true;
+        const out = body.querySelector('#v-result');
+        out.innerHTML = loading('上传中…');
+        try {
+          let last = null;
+          for (const f of input.files) {
+            const fd = new FormData();
+            fd.append('file', f);
+            fd.append('target', body.querySelector('#v-target').value);
+            fd.append('volume', body.querySelector('#v-name').value || 'raw_files');
+            last = await api.upload('/volumes/upload', fd);
+          }
+          out.innerHTML = `<div class="tag green">已上传 ${input.files.length} 个文件</div>
+            <div class="tiny dim mt-8">当前卷共 ${last.files} 个文件，合计 ${fmt.bytes(last.size)}</div>`;
+          toast('上传完成', 'ok');
+          setTimeout(() => views.volume(), 600);
+        } catch (err) {
+          out.innerHTML = `<div class="tag red">失败</div><div class="tiny mt-8">${esc(err.message)}</div>`;
+          e.target.disabled = false;
+        }
+      });
+
+      body.querySelectorAll('[data-vfiles]').forEach((b) =>
+        b.addEventListener('click', async () => {
+          const out = await api.get(`/volumes/${b.dataset.vfiles}/files`);
+          drawer({
+            title: `卷文件 · ${out.volume.catalog}.${out.volume.schema}.${out.volume.name}`,
+            body: out.files.length
+              ? tableHTML(['文件名', '大小', '修改时间'], out.files.map((f) => [f.name, fmt.bytes(f.size), fmt.dt(f.modified)]))
+              : emptyState('卷内没有文件'),
+          });
+        })
+      );
+      body.querySelectorAll('[data-vdel]').forEach((b) =>
+        b.addEventListener('click', async () => {
+          if (!(await confirmDialog('删除卷', '卷内文件会一并删除，确认？', '删除'))) return;
+          await api.del(`/volumes/${b.dataset.vdel}`);
+          views.volume();
+        })
+      );
     },
     tasks: () => {
       body.innerHTML = card('接入任务', emptyState('还没有接入任务', '文件上传建表不产生调度任务；离线/实时同步任务需要外部数据源连接'), { flush: false });

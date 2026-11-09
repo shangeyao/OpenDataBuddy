@@ -210,27 +210,77 @@ async function loadTasks() {
         <span class="x">${t.enabled ? '●' : '○'}</span></div>`).join('')
     : `<div class="tiny dim" style="padding:6px 8px">暂无定时任务</div>`;
   host.querySelectorAll('[data-task]').forEach((n) =>
-    n.addEventListener('click', () => {
-      const t = state.tasks.find((x) => x.id === n.dataset.task);
-      modal({
-        title: t.name,
-        body: `<div class="col" style="gap:12px">
-          <div class="info-strip"><span class="tag ${t.enabled ? 'green' : ''}">${t.enabled ? '已启用' : '已停用'}</span>
-            <span class="mono tiny">${esc(t.cron || '')}</span></div>
-          <div><div class="tiny dim" style="margin-bottom:4px">提示词</div><div class="tiny">${esc(t.prompt)}</div></div>
-          <div><div class="tiny dim">最近运行</div><div class="tiny">${t.last_run ? fmt.dt(t.last_run) : '从未运行'}</div></div>
-        </div>`,
-        actions: [
-          { label: '关闭' },
-          { label: t.enabled ? '停用' : '启用', onClick: async () => {
-              await api.patch(`/buddy-tasks/${t.id}`, { enabled: !t.enabled });
-              toast(t.enabled ? '已停用' : '已启用', 'ok');
-              await loadTasks();
-            } },
-        ],
-      });
-    })
+    n.addEventListener('click', () => openTask(n.dataset.task))
   );
+}
+
+async function openTask(taskId) {
+  const task = state.tasks.find((x) => x.id === taskId);
+  if (!task) return;
+  let runs = [];
+  try {
+    const out = await api.get(`/buddy-tasks/${taskId}/runs`);
+    runs = out.runs || [];
+  } catch { runs = []; }
+
+  const body = el('div');
+  body.innerHTML = `<div class="col" style="gap:14px">
+    <div class="info-strip"><span class="tag ${task.enabled ? 'green' : ''}">${task.enabled ? '已启用' : '已停用'}</span>
+      <span class="mono tiny">${esc(task.cron || '')}</span>
+      <span class="spacer"></span><span class="dim tiny">最近运行 ${task.last_run ? fmt.ago(task.last_run) : '从未'}</span></div>
+    <div><div class="tiny dim" style="margin-bottom:4px">提示词</div><div class="tiny">${esc(task.prompt)}</div></div>
+    <div><div class="tiny dim" style="margin-bottom:6px">运行记录</div>
+      ${runs.length ? `<div class="col" style="gap:6px">${runs.map((r) => `<div class="list-item">
+        <div class="meta"><strong>${r.status === 'success' ? '成功' : r.status === 'failed' ? '失败' : r.status === 'pending' ? '待确认' : '运行中'}</strong>
+          <span>${fmt.dt(r.started_at)}${r.error ? ' · ' + esc(r.error) : ''}</span></div>
+        ${r.conversation_id ? `<a class="btn-link" href="#/buddy/${r.conversation_id}">查看会话</a>` : ''}
+      </div>`).join('')}</div>` : '<div class="tiny dim">还没有运行记录</div>'}
+    </div>
+    ${runs[0] && runs[0].summary ? `<div><div class="tiny dim" style="margin-bottom:4px">最近结果</div>
+      <div class="prose" style="font-size:12.5px">${md(runs[0].summary)}</div></div>` : ''}
+  </div>`;
+
+  modal({
+    title: task.name,
+    wide: true,
+    body,
+    onMount: (root) => {
+      root.querySelectorAll('a[href^="#/buddy/"]').forEach((a) =>
+        a.addEventListener('click', () => document.querySelector('.modal-mask')?.remove())
+      );
+    },
+    actions: [
+      { label: '关闭' },
+      {
+        label: task.enabled ? '停用' : '启用',
+        onClick: async () => {
+          await api.patch(`/buddy-tasks/${task.id}`, { enabled: !task.enabled });
+          toast(task.enabled ? '已停用' : '已启用', 'ok');
+          await loadTasks();
+        },
+      },
+      {
+        label: '立即运行',
+        primary: true,
+        onClick: async (root) => {
+          toast('任务已提交，执行中…');
+          try {
+            const out = await api.post(`/buddy-tasks/${task.id}/run`, {});
+            toast(`执行${out.run.status === 'success' ? '成功' : '结束'}`, 'ok');
+            await loadTasks();
+            await loadConversations();
+            if (out.run.conversation_id) {
+              document.querySelector('.modal-mask')?.remove();
+              state.convId = out.run.conversation_id;
+              location.hash = `#/buddy/${out.run.conversation_id}`;
+            }
+          } catch (e) {
+            toast(e.message, 'err');
+          }
+        },
+      },
+    ],
+  });
 }
 
 async function loadSpaces() {
