@@ -559,7 +559,7 @@ async function viewDrift(host, ctx, tableList, meta) {
           { label: 'JS 散度', desc: '对称 KL', thresholds: { warn: 0.1, crit: 0.2 } },
         ]).map((m) => `<div><b>${esc(m.label)}</b>：${esc(m.desc || '')}
           <span class="dim">阈值 ${m.thresholds?.warn} / ${m.thresholds?.crit}</span></div>`).join('')}
-      </div>`, { sub: '纯 Python 实现，无需 scipy' })}
+      </div>`, { sub: 'Go 原生实现' })}
       ${card('怎么用', `<div class="tiny muted" style="line-height:1.9">
         1. 先在「剖析」Tab 给表存一条基线<br>
         2. 回到这里批量检测，或对单列指定指标<br>

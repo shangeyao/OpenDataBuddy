@@ -191,7 +191,7 @@ export async function renderPlatform(page, ctx) {
           ${[
             ['成员', `${usage.seats.used} 人`, '无席位上限'],
             ['计算资源', `${usage.compute.clusters} 个 / ${usage.compute.cu_total} CU`, '本地运行'],
-            ['存储占用', fmt.bytes(usage.storage.bytes), `剩余 ${fmt.bytes(usage.storage.free_bytes)}`],
+            ['存储占用', fmt.bytes(usage.storage.bytes), usage.storage.free_bytes == null ? '' : `剩余 ${fmt.bytes(usage.storage.free_bytes)}`],
             ['数据规模', `${usage.data.tables} 表 / ${fmt.num(usage.data.rows)} 行`, ''],
             ['Agent 调用', `${usage.agent.calls} 次`, `${usage.agent.conversations} 个会话`],
           ].map(([k, v, sub]) => `<div class="row" style="justify-content:space-between">

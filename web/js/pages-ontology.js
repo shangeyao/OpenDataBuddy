@@ -129,11 +129,10 @@ export async function renderOntology(page, ctx) {
     ], 'graph')}</div>
     <div id="ont-body" class="mt-16"></div>`;
 
+  const body = page.querySelector('#ont-body');
   const tabsRoot = page.querySelector('#ont-tabs');
   bindTabs(tabsRoot, (key) => paint(key));
   paint('graph');
-
-  const body = page.querySelector('#ont-body');
 
   function paint(key) {
     if (key === 'graph') {

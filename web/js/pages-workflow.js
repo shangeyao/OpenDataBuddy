@@ -1,4 +1,4 @@
-﻿// 数据工程 · 工作流开发：9 种节点 / 12 种运行条件 / 两层参数 / DAG 可视化 / 运行抽屉
+// 数据工程 · 工作流开发：9 种节点 / 12 种运行条件 / 两层参数 / DAG 可视化 / 运行抽屉
 import { api, fmt } from './api.js';
 import {
   card, dataTable, descList, drawer, el, emptyState, esc, formModal,
@@ -162,6 +162,10 @@ function layoutDAG(nodes, edges) {
     });
   }
 
+  for (const b of boxes) {
+    const p = b.node?.position;
+    if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) { b.x = Math.max(PAD, Math.min(5000, p.x)); b.y = Math.max(PAD, Math.min(5000, p.y)); }
+  }
   const boxById = new Map(boxes.map((b) => [b.id, b]));
   const links = [];
   for (const [s, t] of cleanEdges) {
@@ -185,8 +189,8 @@ function layoutDAG(nodes, edges) {
   }
 
   return {
-    width: PAD * 2 + (maxLayer + 1) * W + maxLayer * GAP_X,
-    height: PAD * 2 + maxRows * H + Math.max(0, maxRows - 1) * GAP_Y,
+    width: Math.max(PAD * 2 + (maxLayer + 1) * W + maxLayer * GAP_X, ...boxes.map((b) => b.x + b.w + PAD)),
+    height: Math.max(PAD * 2 + maxRows * H + Math.max(0, maxRows - 1) * GAP_Y, ...boxes.map((b) => b.y + b.h + PAD)),
     boxes,
     links,
   };
@@ -203,7 +207,7 @@ function svgDAG(nodes, edges, statusMap, { selected = '', showStatus = false } =
   const arrows = layout.links
     .map((l) => {
       const color = showStatus && statusMap ? STATUS_COLOR[nodeStatusOf(l.to, statusMap)] || STATUS_COLOR.idle : '#c9cdd4';
-      return `<path d="${l.path}" fill="none" stroke="${color}" stroke-width="1.6" stroke-dasharray="${l.backward ? '4 3' : ''}" marker-end="url(#arrow-${l.backward ? 'back' : 'fwd'})" opacity="0.85"/>`;
+      return `<path data-edge-from="${esc(l.from)}" data-edge-to="${esc(l.to)}" d="${l.path}" fill="none" stroke="${color}" stroke-width="1.6" stroke-dasharray="${l.backward ? '4 3' : ''}" marker-end="url(#arrow-${l.backward ? 'back' : 'fwd'})" opacity="0.85"/>`;
     })
     .join('');
 
@@ -624,10 +628,12 @@ function renderDetail(page, ctx, flow) {
   });
   page.querySelectorAll('[data-node]').forEach((g) =>
     g.addEventListener('click', () => {
+      if (g.dataset.dragged) { delete g.dataset.dragged; return; }
       const node = flow.nodes.find((n) => n.id === g.dataset.node);
       if (node) openNodeEditor(page, ctx, flow, node);
     })
   );
+  bindNodeDragging(page, ctx, flow);
   page.querySelectorAll('[data-edit-node]').forEach((b) =>
     b.addEventListener('click', () => {
       const node = flow.nodes.find((n) => n.id === b.dataset.editNode);
@@ -725,9 +731,62 @@ async function saveGraph(page, ctx, flow, nodes, edges) {
     const out = await api.patch(`/workflows/${flow.id}`, { nodes, edges });
     toast('已保存', 'ok');
     renderDetail(page, ctx, out.workflow || { ...flow, nodes, edges });
+    return true;
   } catch (err) {
     toast(err.message, 'err');
+    return false;
   }
+}
+
+
+// Persist node coordinates through the same DAG update API used by the editor.
+function bindNodeDragging(page, ctx, flow) {
+  const svg = page.querySelector('.wf-dag');
+  if (!svg) return;
+  svg.style.touchAction = 'none';
+  const point = (event) => { const p = new DOMPoint(event.clientX, event.clientY); return p.matrixTransform(svg.getScreenCTM().inverse()); };
+  page.querySelectorAll('.wf-node').forEach((group) => {
+    group.style.cursor = 'grab';
+    let drag = null;
+    group.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0) return;
+      const rect = group.querySelector('rect');
+      drag = { start: point(event), x: Number(rect.getAttribute('x')), y: Number(rect.getAttribute('y')), dx: 0, dy: 0 };
+      group.setPointerCapture(event.pointerId);
+      event.preventDefault();
+    });
+    group.addEventListener('pointermove', (event) => {
+      if (!drag) return;
+      const p = point(event);
+      drag.dx = Math.max(24 - drag.x, Math.min(5000 - drag.x, p.x - drag.start.x));
+      drag.dy = Math.max(24 - drag.y, Math.min(5000 - drag.y, p.y - drag.start.y));
+      if (Math.abs(drag.dx) + Math.abs(drag.dy) < 4) return;
+      group.dataset.dragged = 'true';
+      group.setAttribute('transform', `translate(${drag.dx},${drag.dy})`);
+      group.style.cursor = 'grabbing';
+      svg.querySelectorAll('[data-edge-from]').forEach((edge) => {
+        const coords = (key, right) => {
+          const g = Array.from(svg.querySelectorAll('.wf-node')).find((g) => g.dataset.node === key);
+          const r = g.querySelector('rect');
+          return { x: Number(r.getAttribute('x')) + (right ? Number(r.getAttribute('width')) : 0) + (g === group ? drag.dx : 0), y: Number(r.getAttribute('y')) + Number(r.getAttribute('height')) / 2 + (g === group ? drag.dy : 0) };
+        };
+        const a = coords(edge.dataset.edgeFrom, true), b = coords(edge.dataset.edgeTo, false), mid = (a.x + b.x) / 2;
+        edge.setAttribute('d', `M ${a.x} ${a.y} C ${mid} ${a.y} ${mid} ${b.y} ${b.x} ${b.y}`);
+      });
+    });
+    group.addEventListener('pointerup', async (event) => {
+      if (!drag) return;
+      const moved = Math.abs(drag.dx) + Math.abs(drag.dy) >= 4;
+      const position = { x: Math.round(drag.x + drag.dx), y: Math.round(drag.y + drag.dy) };
+      drag = null;
+      group.releasePointerCapture(event.pointerId);
+      group.style.cursor = 'grab';
+      if (!moved) return;
+      const nodes = flow.nodes.map((node) => node.id === group.dataset.node ? { ...node, position } : node);
+      if (!(await saveGraph(page, ctx, flow, nodes, flow.edges))) renderDetail(page, ctx, flow);
+    });
+    group.addEventListener('pointercancel', () => { drag = null; renderDetail(page, ctx, flow); });
+  });
 }
 
 /* ------------------------------------------------------------------ 节点编辑 */
@@ -1103,7 +1162,7 @@ function showRunDrawer(run, meta) {
               <div class="tiny dim" style="margin-top:6px">
                 条件：${esc(conditionLabel(n.condition, meta))}${n.attempts > 1 ? ` · 尝试 ${n.attempts} 次` : ''}
               </div>
-              ${n.output ? `<pre class="code" style="margin-top:8px;max-height:180px;overflow:auto;white-space:pre-wrap">${esc(n.output)}</pre>` : ''}
+              ${n.output ? `<pre class="code" style="margin-top:8px;max-height:180px;overflow:auto;white-space:pre-wrap">${esc(typeof n.output === 'string' ? n.output : JSON.stringify(n.output, null, 2))}</pre>` : ''}
               ${n.error ? `<div class="tag red" style="margin-top:8px;display:inline-block">${esc(n.error)}</div>` : ''}
               ${n.sql ? `<div class="tiny dim" style="margin-top:8px">SQL</div>
                 <pre class="code" style="max-height:120px;overflow:auto;white-space:pre-wrap">${esc(n.sql)}</pre>` : ''}

@@ -1,5 +1,5 @@
 // W7 · OPS 运维监控（四层视图 + 5 渠道告警 + AI 诊断）
-// 对应后端：databuddy/opsview.py、databuddy/alerts.py、databuddy/api/ops_ext.py
+// 对应后端：internal/platform/operations.go、governance.go
 import { api, fmt } from './api.js';
 import {
   card, dataTable, descList, emptyState, esc, formModal, loading,

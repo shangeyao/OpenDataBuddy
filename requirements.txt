@@ -1,5 +1,2 @@
-fastapi>=0.110
-uvicorn[standard]>=0.27
-duckdb>=0.10
-python-multipart>=0.0.9
-httpx>=0.26
+# The optional Notebook/Python-node kernel uses the Python standard library only.
+# The HTTP API, business engines, SQLite and DuckDB run natively in Go.

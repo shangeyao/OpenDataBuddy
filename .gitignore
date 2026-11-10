@@ -15,3 +15,7 @@ data/
 node_modules/
 .idea/
 .vscode/
+
+/bin/
+/opendatabuddy
+/opendatabuddy.exe

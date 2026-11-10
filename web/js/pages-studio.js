@@ -391,7 +391,7 @@ export async function renderStudio2(page, ctx) {
 
   async function persistSource(cellId, source) {
     const cell = currentCell(cellId);
-    if (!cell || cell.source === source) return;
+    if (!cell) return;
     cell.source = source;
     try {
       await api.patch(`/notebooks/${state.notebook.id}/cells/${cellId}`, { source });
@@ -443,6 +443,10 @@ export async function renderStudio2(page, ctx) {
       btn.textContent = '执行中…';
     }
     try {
+      for (const node of page.querySelectorAll('[data-cell]')) {
+        const source = node.querySelector('.nb-src');
+        if (source) await persistSource(node.dataset.cell, source.value);
+      }
       const out = await api.post(`/notebooks/${state.notebook.id}/run-all`, {
         params: state.params || {},
       });

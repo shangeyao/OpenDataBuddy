@@ -1,5 +1,5 @@
 // W7 · Agent 安全防护（双向 Guardrails + 高危 SQL + 三要素矩阵 + OWASP LLM Top10）
-// 对应后端：databuddy/guardrails_ext.py、databuddy/api/ops_ext.py
+// 对应后端：internal/platform/governance.go
 import { api, fmt } from './api.js';
 import {
   card, dataTable, emptyState, esc, loading,

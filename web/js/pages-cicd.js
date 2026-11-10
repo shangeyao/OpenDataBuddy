@@ -39,7 +39,7 @@ export function renderCicd(page, ctx) {
   async function loadBundles(selectId) {
     shell.innerHTML = loading('加载 bundle…');
     try {
-      const data = await api.get('/api/bundles');
+      const data = await api.get('/bundles');
       state.bundles = data.bundles || [];
       state.envs = data.envs || state.envs;
       state.kinds = data.kinds || [];
@@ -59,7 +59,7 @@ export function renderCicd(page, ctx) {
       return;
     }
     try {
-      const data = await api.get(`/api/bundles/${id}`);
+      const data = await api.get(`/bundles/${id}`);
       state.current = data.bundle;
       state.dirty = false;
       render();
@@ -191,7 +191,7 @@ export function renderCicd(page, ctx) {
     const envBox = shell.querySelector('#cd-envs');
     const hisBox = shell.querySelector('#cd-history');
     try {
-      const s = await api.get(`/api/bundles/${state.current.id}/summary`);
+      const s = await api.get(`/bundles/${state.current.id}/summary`);
       if (envBox) envBox.innerHTML = envCards(s);
       if (hisBox) hisBox.innerHTML = historyHTML(s.history);
       const issBox = shell.querySelector('#cd-issues');
@@ -260,7 +260,7 @@ export function renderCicd(page, ctx) {
           return false;
         }
         try {
-          const r = await api.post('/api/bundles', { name });
+          const r = await api.post('/bundles', { name });
           toast('已创建', 'ok');
           state.dirty = false;
           await loadBundles(r.bundle?.id);
@@ -276,7 +276,7 @@ export function renderCicd(page, ctx) {
   async function saveYaml() {
     if (!state.current) return toast('请先创建 bundle', 'err');
     try {
-      await api.patch(`/api/bundles/${state.current.id}`, { yaml: yamlValue() });
+      await api.patch(`/bundles/${state.current.id}`, { yaml: yamlValue() });
       state.dirty = false;
       const mark = shell.querySelector('#cd-dirty');
       if (mark) mark.textContent = '';
@@ -291,13 +291,13 @@ export function renderCicd(page, ctx) {
     if (!state.current) return toast('请先创建 bundle', 'err');
     // 先存再校验，保证校验的是屏幕上的内容
     try {
-      await api.patch(`/api/bundles/${state.current.id}`, { yaml: yamlValue() });
+      await api.patch(`/bundles/${state.current.id}`, { yaml: yamlValue() });
       state.dirty = false;
     } catch (err) {
       return toast(err.message || '保存失败', 'err');
     }
     try {
-      const r = await api.post(`/api/bundles/${state.current.id}/validate`, {});
+      const r = await api.post(`/bundles/${state.current.id}/validate`, {});
       const box = shell.querySelector('#cd-issues');
       if (box) box.innerHTML = issuesHTML(r.issues);
       const errs = (r.issues || []).filter((i) => i.level === 'error').length;
@@ -313,13 +313,13 @@ export function renderCicd(page, ctx) {
     if (!state.current) return toast('请先创建 bundle', 'err');
     const env = currentEnv();
     try {
-      await api.patch(`/api/bundles/${state.current.id}`, { yaml: yamlValue() });
+      await api.patch(`/bundles/${state.current.id}`, { yaml: yamlValue() });
       state.dirty = false;
     } catch (err) {
       return toast(err.message || '保存失败', 'err');
     }
     try {
-      const r = await api.post(`/api/bundles/${state.current.id}/deploy`, { env });
+      const r = await api.post(`/bundles/${state.current.id}/deploy`, { env });
       if (!r.ok) {
         const box = shell.querySelector('#cd-issues');
         if (box) box.innerHTML = issuesHTML(r.issues);
@@ -337,7 +337,7 @@ export function renderCicd(page, ctx) {
     if (!state.current) return toast('请先创建 bundle', 'err');
     const env = currentEnv();
     try {
-      const r = await api.post(`/api/bundles/${state.current.id}/run`, { env });
+      const r = await api.post(`/bundles/${state.current.id}/run`, { env });
       const ok = (r.runs || []).filter((x) => x.ok).length;
       const total = (r.runs || []).length;
       if (!total) return toast(r.message || 'bundle 中没有可运行的工作流', '');
@@ -357,7 +357,7 @@ export function renderCicd(page, ctx) {
     );
     if (!ok) return;
     try {
-      const r = await api.post(`/api/bundles/${state.current.id}/destroy`, { env });
+      const r = await api.post(`/bundles/${state.current.id}/destroy`, { env });
       toast(r.summary || '销毁完成', 'ok');
       await refreshSummary();
     } catch (err) {

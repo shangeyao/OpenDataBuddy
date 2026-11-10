@@ -7,9 +7,9 @@ import { renderBuddy } from './buddy.js';
 import { renderOverview } from './pages-overview.js';
 import { renderCatalog, renderIngest, renderSql, renderSources } from './pages-data.js';
 import { renderStudio, renderFlows, renderCicd, renderOps, renderCompute } from './pages-eng.js';
-import { renderExperiments, renderRegistry, renderServing, renderAgents, renderMcp, renderModelList } from './pages-ai.js';
+import { renderExperiments, renderRegistry, renderServing, renderAgents, renderMcp, renderModelList } from './pages-ai.js?v=0.4.0';
 import { renderSemantic, renderQuality, renderSecurity, renderAnalysis, renderDashboards } from './pages-gov.js';
-import { renderWorkspaces, renderConsoleUsers, renderPlatform, renderMembers, renderSettings } from './pages-sys.js';
+import { renderWorkspaces, renderConsoleUsers, renderPlatform, renderMembers, renderSettings } from './pages-sys.js?v=0.4.0';
 
 /**
  * 按需加载新版页面：模块存在就用新版，缺失/报错就回退到内置实现。
@@ -18,7 +18,7 @@ import { renderWorkspaces, renderConsoleUsers, renderPlatform, renderMembers, re
 function lazyPage(modulePath, exportName, fallback) {
   return async (page, ctx) => {
     try {
-      const mod = await import(modulePath);
+      const mod = await import(`${modulePath}?v=0.4.0.1`);
       const fn = mod[exportName];
       if (typeof fn !== 'function') throw new Error(`${modulePath} 未导出 ${exportName}`);
       return await fn(page, ctx);

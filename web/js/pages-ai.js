@@ -349,13 +349,13 @@ export async function renderMcp(page, ctx) {
         ${card('接入方式', `<pre class="code">{
   "mcpServers": {
     "databuddy": {
-      "command": "python",
-      "args": ["-m", "databuddy.mcp"],
-      "env": { "DATABUDDY_TOKEN": "&lt;token&gt;" }
+      "command": "/path/to/OpenDataBuddy/bin/opendatabuddy",
+      "args": ["--mcp"],
+      "env": { "DATABUDDY_TOKEN": "&lt;token&gt;", "DATABUDDY_API_URL": "http://127.0.0.1:8000" }
     }
   }
 }</pre>
-          <div class="tiny dim mt-12">v0.2 提供独立 MCP server 进程；当前可通过 HTTP 接口 /api/* 直接调用。</div>`)}
+          <div class="tiny dim mt-12">先启动控制台并构建 Go 程序，再替换为本机绝对路径；MCP 通过 HTTP 复用控制台的工具与数据库。</div>`)}
         ${card('安全约束', `<div class="tiny muted" style="line-height:1.9">
           所有工具调用都经过护栏：只读 SQL 校验、三要素拦截、PII 脱敏。<br>
           外部 Agent 调用同样落审计日志。</div>`)}
