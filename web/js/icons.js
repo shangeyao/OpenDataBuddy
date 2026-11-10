@@ -36,6 +36,10 @@ const P = {
   sources: '<ellipse cx="12" cy="6" rx="7.5" ry="3"/><path d="M4.5 6v12c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3V6"/>',
   compute: '<rect x="4" y="4" width="16" height="6" rx="1.5"/><rect x="4" y="14" width="16" height="6" rx="1.5"/><path d="M8 7h.01M8 17h.01"/>',
   subscription: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18"/><path d="M7 15h4"/>',
+  // 本体建模：实体 + 关系
+  ontology: '<circle cx="6" cy="6" r="2.6"/><circle cx="18" cy="6" r="2.6"/><circle cx="12" cy="18" r="2.6"/><path d="M8.6 6h6.8"/><path d="M7.4 8.3l3.3 7.4"/><path d="M16.6 8.3l-3.3 7.4"/>',
+  // 特征管理
+  features: '<path d="M4 20V8l4-3 4 3v12"/><path d="M12 20V11l4-3 4 3v9"/><path d="M2 20h20"/>',
 };
 
 export function icon(name, size = 16) {

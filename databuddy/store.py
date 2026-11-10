@@ -379,6 +379,149 @@ CREATE TABLE IF NOT EXISTS settings (
     value TEXT
 );
 
+-- ---------------------------------------------------------------- 数据质量扩展
+-- 规则执行历史（趋势、波动率、告警溯源都依赖它）
+CREATE TABLE IF NOT EXISTS quality_rule_runs (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT,
+    rule_id TEXT,
+    table_ref TEXT,
+    status TEXT,                                  -- pass / fail / error
+    value TEXT,
+    detail TEXT DEFAULT '',
+    ran_at TEXT
+);
+
+-- 数据剖析基线：漂移检测以它为参照
+CREATE TABLE IF NOT EXISTS profile_baselines (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT,
+    table_ref TEXT NOT NULL,
+    column_name TEXT DEFAULT '',
+    mode TEXT DEFAULT 'snapshot',                 -- snapshot / timeseries / inference
+    stats TEXT DEFAULT '{}',                      -- 直方图 / 分位数 / 类别分布
+    captured_at TEXT
+);
+
+-- 异常检测结果（零配置、自学习）
+CREATE TABLE IF NOT EXISTS anomaly_findings (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT,
+    table_ref TEXT,
+    column_name TEXT DEFAULT '',
+    kind TEXT DEFAULT 'schema',                   -- schema / volume / distribution / freshness
+    severity TEXT DEFAULT 'warning',              -- info / warning / critical
+    detail TEXT DEFAULT '',
+    detected_at TEXT,
+    acknowledged INTEGER DEFAULT 0
+);
+
+-- ---------------------------------------------------------------- 工作流扩展
+CREATE TABLE IF NOT EXISTS flow_node_runs (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    flow_id TEXT,
+    node_id TEXT,
+    name TEXT DEFAULT '',
+    type TEXT DEFAULT 'sql',
+    status TEXT DEFAULT 'running',                -- running / success / failed / skipped
+    output TEXT DEFAULT '',
+    error TEXT DEFAULT '',
+    started_at TEXT,
+    finished_at TEXT
+);
+
+-- ---------------------------------------------------------------- CI/CD 发布
+CREATE TABLE IF NOT EXISTS bundles (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT,
+    name TEXT NOT NULL,
+    yaml TEXT DEFAULT '',
+    status TEXT DEFAULT 'draft',                  -- draft / valid / invalid
+    issues TEXT DEFAULT '[]',
+    created_at TEXT,
+    updated_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS bundle_deployments (
+    id TEXT PRIMARY KEY,
+    bundle_id TEXT,
+    workspace_id TEXT,
+    env TEXT DEFAULT 'dev',
+    action TEXT DEFAULT 'deploy',                 -- init / validate / deploy / run / summary / destroy
+    status TEXT DEFAULT 'success',                -- success / failed
+    summary TEXT DEFAULT '',
+    log TEXT DEFAULT '[]',
+    created_at TEXT
+);
+
+-- ---------------------------------------------------------------- 特征管理 / 模型注册
+CREATE TABLE IF NOT EXISTS features (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT,
+    name TEXT NOT NULL,
+    entity TEXT DEFAULT '',                       -- 主体：customer / order / product
+    dtype TEXT DEFAULT 'float',
+    expr TEXT DEFAULT '',
+    table_ref TEXT DEFAULT '',
+    description TEXT DEFAULT '',
+    stats TEXT DEFAULT '{}',
+    version INTEGER DEFAULT 1,
+    status TEXT DEFAULT 'published',              -- draft / published
+    created_at TEXT,
+    updated_at TEXT,
+    UNIQUE (workspace_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS registered_models (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT,
+    name TEXT NOT NULL,
+    description TEXT DEFAULT '',
+    source_experiment TEXT DEFAULT '',
+    framework TEXT DEFAULT '',
+    owner TEXT DEFAULT '',
+    created_at TEXT,
+    UNIQUE (workspace_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS model_versions (
+    id TEXT PRIMARY KEY,
+    model_id TEXT NOT NULL,
+    workspace_id TEXT,
+    version TEXT NOT NULL,
+    stage TEXT DEFAULT 'staging',                 -- staging / production / archived
+    metrics TEXT DEFAULT '{}',
+    artifact_uri TEXT DEFAULT '',
+    run_id TEXT DEFAULT '',
+    description TEXT DEFAULT '',
+    created_at TEXT
+);
+
+-- ---------------------------------------------------------------- 多模态目录
+CREATE TABLE IF NOT EXISTS functions (
+    id TEXT PRIMARY KEY,
+    schema_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    kind TEXT DEFAULT 'udf',                      -- udf / view / macro
+    body TEXT DEFAULT '',
+    description TEXT DEFAULT '',
+    created_at TEXT,
+    UNIQUE (schema_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS external_catalogs (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT,
+    name TEXT NOT NULL,
+    type TEXT DEFAULT 'postgres',                 -- postgres / mysql / sqlite / iceberg / hive
+    config TEXT DEFAULT '{}',
+    status TEXT DEFAULT 'unknown',                -- unknown / ok / failed
+    last_sync_at TEXT,
+    description TEXT DEFAULT '',
+    created_at TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_tables_schema ON tables(schema_id);
 CREATE INDEX IF NOT EXISTS idx_columns_table ON columns(table_id);
 CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id, created_at);

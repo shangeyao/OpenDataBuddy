@@ -42,6 +42,41 @@ def metric_block(workspace_id: str) -> str:
     return "【语义层指标（有统一口径，优先使用）】\n" + semantic.metric_prompt_block(metrics)
 
 
+def glossary_block(workspace_id: str, question: str) -> str:
+    """业务术语：把用户嘴里的「销售额」「活跃客户」翻译成确定的资产。
+
+    命中当前问句的术语优先放在前面，其余作为背景 —— 术语表通常不大，
+    全量塞进去比让模型猜口径更划算。
+    """
+    try:
+        from .. import ontology
+    except Exception:  # noqa: BLE001 - 本体模块可选
+        return ""
+    try:
+        terms = ontology.list_terms(workspace_id)
+    except Exception:  # noqa: BLE001
+        return ""
+    if not terms:
+        return ""
+    hit = ontology.resolve_term(workspace_id, question)
+    lines = ["【业务术语表】用户可能用业务黑话提问，按此表映射到资产，不要自行猜测口径："]
+    if hit:
+        lines.append(
+            f"※ 当前问句命中术语「{hit['term']}」"
+            f"（同义：{'、'.join(hit.get('synonyms') or []) or '无'}）"
+            f"→ {hit.get('asset_type')}:{hit.get('asset_ref') or '-'}；{hit.get('definition') or ''}"
+        )
+    for t in terms[:30]:
+        if hit and t["id"] == hit["id"]:
+            continue
+        syn = "、".join(t.get("synonyms") or []) or "-"
+        lines.append(
+            f'- {t["term"]}（同义：{syn}）→ {t.get("asset_type")}:{t.get("asset_ref") or "-"}'
+            f'{"；" + t["definition"] if t.get("definition") else ""}'
+        )
+    return "\n".join(lines)
+
+
 def system_prompt(workspace_id: str, user: dict, mode: str, question: str, chat_mode: str) -> str:
     ws = store.row("SELECT name FROM workspaces WHERE id = ?", (workspace_id,))
     ws_name = ws["name"] if ws else "默认工作空间"
@@ -61,6 +96,10 @@ def system_prompt(workspace_id: str, user: dict, mode: str, question: str, chat_
         "",
         metric_block(workspace_id),
     ]
+
+    gloss = glossary_block(workspace_id, question)
+    if gloss:
+        blocks += ["", gloss]
 
     kb = knowledge.context_block(workspace_id, question, top_k=3)
     if kb:

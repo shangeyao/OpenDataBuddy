@@ -489,14 +489,8 @@ def delete_space(space_id: str, ctxd: dict = Depends(ctx)) -> dict:
 
 
 # -------------------------------------------------------------------- 卷管理
-
-
-@router.get("/volumes")
-def list_volumes(ctxd: dict = Depends(ctx)) -> dict:
-    rows = store.rows(
-        "SELECT * FROM volumes WHERE workspace_id = ? ORDER BY created_at DESC", (ctxd["workspace_id"],)
-    )
-    return {"volumes": rows}
+# 卷的查询 / 文件浏览 / 删除由 api/catalog_ext.py 统一提供（含存在性与体积刷新）。
+# 这里只保留「上传文件到卷」——它依赖 multipart，和 ctl 侧的静态能力放在一起。
 
 
 @router.post("/volumes/upload")
@@ -550,40 +544,6 @@ async def upload_volume(
         f"{parts[0]}.{parts[1]}.{safe_volume}", {"file": name, "bytes": len(payload)},
     )
     return {"ok": True, "volume_id": volume_id, "file": dest.name, "files": len(files), "size": total}
-
-
-@router.get("/volumes/{volume_id}/files")
-def volume_files(volume_id: str, ctxd: dict = Depends(ctx)) -> dict:
-    row = store.row(
-        "SELECT * FROM volumes WHERE id = ? AND workspace_id = ?", (volume_id, ctxd["workspace_id"])
-    )
-    if not row:
-        raise HTTPException(status_code=404, detail="卷不存在")
-    files = []
-    base = Path(row["path"])
-    if base.exists():
-        for f in sorted(base.rglob("*")):
-            if f.is_file():
-                stat = f.stat()
-                files.append(
-                    {
-                        "name": f.name,
-                        "size": stat.st_size,
-                        "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds"),
-                    }
-                )
-    return {"volume": row, "files": files}
-
-
-@router.delete("/volumes/{volume_id}")
-def delete_volume(volume_id: str, ctxd: dict = Depends(ctx)) -> dict:
-    row = store.row(
-        "SELECT * FROM volumes WHERE id = ? AND workspace_id = ?", (volume_id, ctxd["workspace_id"])
-    )
-    if row:
-        shutil.rmtree(row["path"], ignore_errors=True)
-        store.execute("DELETE FROM volumes WHERE id = ?", (volume_id,))
-    return {"ok": True}
 
 
 # ------------------------------------------------------- 通知渠道与 Git 连接

@@ -11,24 +11,44 @@ import { renderExperiments, renderRegistry, renderServing, renderAgents, renderM
 import { renderSemantic, renderQuality, renderSecurity, renderAnalysis, renderDashboards } from './pages-gov.js';
 import { renderWorkspaces, renderConsoleUsers, renderPlatform, renderMembers, renderSettings } from './pages-sys.js';
 
+/**
+ * 按需加载新版页面：模块存在就用新版，缺失/报错就回退到内置实现。
+ * 这样新增能力不必改动路由表结构，也不会因为某个模块还没就绪导致整页白屏。
+ */
+function lazyPage(modulePath, exportName, fallback) {
+  return async (page, ctx) => {
+    try {
+      const mod = await import(modulePath);
+      const fn = mod[exportName];
+      if (typeof fn !== 'function') throw new Error(`${modulePath} 未导出 ${exportName}`);
+      return await fn(page, ctx);
+    } catch (err) {
+      console.warn(`[router] ${exportName} 加载失败，回退内置页面：`, err);
+      return await fallback(page, ctx);
+    }
+  };
+}
+
 const WS_ROUTES = {
   overview: { title: '工作空间概览', desc: '资源概况、近期运行动态与快捷入口', icon: 'overview', render: renderOverview },
   buddy: { title: 'Buddy', desc: 'Agent 原生数据智能体 · 对话即操作', icon: 'buddy', render: renderBuddy, full: true },
-  ingest: { title: '数据接入', desc: '文件到表、离线/实时同步与数据源接入', icon: 'ingest', render: renderIngest },
-  studio: { title: '开发工作台', desc: 'Notebook、SQL IDE 与 AI 代码助手', icon: 'studio', render: renderStudio },
-  flows: { title: '工作流编排', desc: '可视化 DAG、依赖与调度配置', icon: 'flows', render: renderFlows },
-  cicd: { title: '发布管理', desc: '配置即代码，Bundle 校验与多环境发布', icon: 'cicd', render: renderCicd },
-  ops: { title: '运维监控', desc: '四层运行视图、日志与 AI 诊断', icon: 'ops', render: renderOps },
+  ingest: { title: '数据接入', desc: '文件到表、离线/实时同步与数据源接入', icon: 'ingest', render: lazyPage('./pages-ingest.js', 'renderIngest2', renderIngest) },
+  studio: { title: '开发工作台', desc: 'Notebook、SQL IDE 与 AI 代码助手', icon: 'studio', render: lazyPage('./pages-studio.js', 'renderStudio2', renderStudio) },
+  flows: { title: '工作流编排', desc: '可视化 DAG、依赖与调度配置', icon: 'flows', render: lazyPage('./pages-workflow.js', 'renderWorkflow', renderFlows) },
+  cicd: { title: '发布管理', desc: '配置即代码，Bundle 校验与多环境发布', icon: 'cicd', render: lazyPage('./pages-cicd.js', 'renderCicd', renderCicd) },
+  ops: { title: '运维监控', desc: '四层运行视图、日志与 AI 诊断', icon: 'ops', render: lazyPage('./pages-ops.js', 'renderOps2', renderOps) },
   exp: { title: '模型实验', desc: '实验跟踪、指标对比与超参记录', icon: 'experiment', render: renderExperiments },
-  registry: { title: '模型管理', desc: '模型注册、版本与血缘', icon: 'registry', render: renderRegistry },
-  serving: { title: '模型服务', desc: '在线服务、副本与启停', icon: 'serving', render: renderServing },
+  registry: { title: '模型管理', desc: '模型注册、版本与血缘', icon: 'registry', render: lazyPage('./pages-mlops.js', 'renderRegistry2', renderRegistry) },
+  serving: { title: '模型服务', desc: '在线服务、副本与启停', icon: 'serving', render: lazyPage('./pages-mlops.js', 'renderServing2', renderServing) },
+  features: { title: '特征管理', desc: '特征定义、物化计算与训练集构建', icon: 'features', render: lazyPage('./pages-mlops.js', 'renderFeatures', renderExperiments) },
   sql: { title: '数据探索', desc: 'SQL 直查与结果可视化', icon: 'explore', render: renderSql },
   dashboards: { title: '仪表盘', desc: '看板搭建、卡片渲染与分享', icon: 'dashboards', render: renderDashboards },
-  analysis: { title: '分析空间', desc: '面向业务方的分析空间与资产绑定', icon: 'analysis', render: renderAnalysis },
+  analysis: { title: '分析空间', desc: '面向业务方的分析空间与资产绑定', icon: 'analysis', render: lazyPage('./pages-analysis.js', 'renderAnalysis2', renderAnalysis) },
   semantic: { title: '统一语义层', desc: '本体建模、指标口径与维度定义', icon: 'semantic', render: renderSemantic },
-  quality: { title: '数据质量', desc: '规则引擎、执行结果与异常检测', icon: 'quality', render: renderQuality },
-  catalog: { title: '数据目录', desc: 'Catalog.Schema.Table 三级资产与血缘', icon: 'catalog', render: renderCatalog },
-  security: { title: 'Agent 安全防护', desc: '注入检测、三要素拦截与权限绑定', icon: 'security', render: renderSecurity },
+  ontology: { title: '本体建模', desc: '实体关系图、业务术语表与指标口径', icon: 'ontology', render: lazyPage('./pages-ontology.js', 'renderOntology', renderSemantic) },
+  quality: { title: '数据质量', desc: '规则引擎、执行结果与异常检测', icon: 'quality', render: lazyPage('./pages-quality.js', 'renderQuality', renderQuality) },
+  catalog: { title: '数据目录', desc: 'Catalog.Schema.Table 三级资产与血缘', icon: 'catalog', render: lazyPage('./pages-catalog.js', 'renderCatalog2', renderCatalog) },
+  security: { title: 'Agent 安全防护', desc: '注入检测、三要素拦截与权限绑定', icon: 'security', render: lazyPage('./pages-security.js', 'renderSecurity2', renderSecurity) },
   agents: { title: '智能体', desc: '内置与自定义 Agent', icon: 'agents', render: renderAgents },
   mcp: { title: 'MCP 服务', desc: 'Model Context Protocol 工具暴露', icon: 'mcp', render: renderMcp },
   modellist: { title: '模型列表', desc: '多模型接入与 Endpoint 管理', icon: 'modellist', render: renderModelList },
@@ -49,9 +69,9 @@ const NAV_GROUPS = [
   { label: '智能体', items: ['buddy'] },
   { label: '数据接入', items: ['ingest'] },
   { label: '数据工程', items: ['studio', 'flows', 'cicd', 'ops'] },
-  { label: '数据科学', items: ['exp', 'registry', 'serving'] },
+  { label: '数据科学', items: ['exp', 'features', 'registry', 'serving'] },
   { label: '数据分析', items: ['sql', 'dashboards', 'analysis'] },
-  { label: '数据治理', items: ['semantic', 'quality', 'catalog', 'security'] },
+  { label: '数据治理', items: ['semantic', 'ontology', 'quality', 'catalog', 'security'] },
   { label: '数据应用', items: ['agents', 'mcp', 'modellist'] },
   { label: '平台管理', items: ['sources', 'compute', 'members', 'settings'] },
 ];

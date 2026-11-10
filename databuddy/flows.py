@@ -301,6 +301,15 @@ class Scheduler:
                 buddy_tasks.run_due(when)
             except Exception:  # noqa: BLE001
                 pass
+        # 报告定时推送（AI 报告型）
+        if self._last_minute.get("__reports__") != stamp:
+            self._last_minute["__reports__"] = stamp
+            try:
+                from . import reports
+
+                reports.run_due(when)
+            except Exception:  # noqa: BLE001
+                pass
 
 
 scheduler = Scheduler()
