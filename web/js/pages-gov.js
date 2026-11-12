@@ -324,6 +324,110 @@ async function newSpace(ctx, tables, metrics) {
 }
 
 /* -------------------------------------------------------------- 仪表盘 */
+const CARD_CHART_TYPES = [
+  { value: 'kpi', label: '指标卡 (kpi)' },
+  { value: 'line', label: '折线图 (line)' },
+  { value: 'bar', label: '柱状图 (bar)' },
+  { value: 'pie', label: '饼图 (pie)' },
+  { value: 'table', label: '明细表 (table)' },
+];
+
+const CARD_PERIODS = [
+  { value: '', label: '默认（上月）' },
+  { value: 'today', label: '今天' },
+  { value: 'yesterday', label: '昨天' },
+  { value: 'last_7d', label: '近 7 天' },
+  { value: 'last_30d', label: '近 30 天' },
+  { value: 'last_90d', label: '近 90 天' },
+  { value: 'this_month', label: '本月' },
+  { value: 'this_year', label: '本年' },
+];
+
+// 图表轴推导，与后端 chart() 约定一致：x 取维度列，y 取数值列
+function chartSpecFor(type, columns, rows, base) {
+  const cols = columns || [];
+  const sample = (rows || []).slice(0, 20);
+  const isNum = (i) => sample.some((r) => typeof r[i] === 'number' && !Number.isNaN(r[i]));
+  const numericIdx = cols.map((_, i) => i).filter(isNum);
+  if (type === 'table') return { type: 'table' };
+  if (type === 'kpi') {
+    const idx = numericIdx.length ? numericIdx[0] : (base?.value_index ?? 1);
+    return { type: 'kpi', value_index: idx, label: cols[idx] || base?.label || '' };
+  }
+  const x = base?.x ?? 0;
+  let y = base?.y;
+  if (y === undefined || y === null || y === x || !isNum(y)) y = numericIdx.find((i) => i !== x) ?? 1;
+  return { type, x, y };
+}
+
+function chartTypeLabel(type) {
+  const hit = CARD_CHART_TYPES.find((t) => t.value === type);
+  return hit ? hit.label : (type || '表格');
+}
+
+// spec 里只保留卡片定义，查询结果由后端渲染时实时计算
+function toStoredCard(c) {
+  const out = { title: c.title || '未命名卡片', sql: c.sql || '', chart: c.chart || { type: 'table' } };
+  if (c.source) out.source = c.source;
+  return out;
+}
+
+// 拖拽排序：把 from 位置的卡片移动到 to 位置的前/后半区
+function moveCard(cards, from, to, after) {
+  const next = cards.slice();
+  const [moved] = next.splice(from, 1);
+  let target = after ? to + 1 : to;
+  if (from < target) target -= 1;
+  next.splice(target, 0, moved);
+  return next;
+}
+
+// HTML5 拖拽排序：手柄 draggable，卡片容器作为放置目标
+function bindCardDragging(root, onReorder) {
+  const boxes = Array.from(root.querySelectorAll('[data-card-idx]'));
+  let from = -1;
+  root.querySelectorAll('[data-drag]').forEach((handle) => {
+    handle.addEventListener('dragstart', (e) => {
+      from = Number(handle.dataset.drag);
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', String(from));
+      const box = handle.closest('[data-card-idx]');
+      if (box) box.style.opacity = '.45';
+    });
+    handle.addEventListener('dragend', () => {
+      from = -1;
+      boxes.forEach((b) => {
+        b.style.opacity = '';
+        b.style.outline = '';
+        delete b.dataset.dropAfter;
+      });
+    });
+  });
+  boxes.forEach((box, idx) => {
+    box.addEventListener('dragover', (e) => {
+      if (from < 0) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      const rect = box.getBoundingClientRect();
+      const after = e.clientY > rect.top + rect.height / 2;
+      box.dataset.dropAfter = after ? '1' : '0';
+      box.style.outline = `2px dashed ${after ? 'var(--brand)' : 'var(--border-strong)'}`;
+    });
+    box.addEventListener('dragleave', (e) => {
+      if (e.relatedTarget && box.contains(e.relatedTarget)) return;
+      box.style.outline = '';
+    });
+    box.addEventListener('drop', (e) => {
+      e.preventDefault();
+      const src = from >= 0 ? from : Number(e.dataTransfer.getData('text/plain'));
+      const after = box.dataset.dropAfter === '1';
+      box.style.outline = '';
+      if (Number.isNaN(src) || src < 0) return;
+      onReorder(src, idx, after);
+    });
+  });
+}
+
 export async function renderDashboards(page, ctx) {
   page.innerHTML = loading();
   const [{ dashboards }, { metrics }] = await Promise.all([api.get('/dashboards'), api.get('/metrics')]);
@@ -336,47 +440,297 @@ export async function renderDashboards(page, ctx) {
     <div class="card flush">
       <div class="tbl-toolbar"><span class="title">仪表盘</span><span class="dim tiny">${dashboards.length} 个</span>
         <span class="spacer"></span><button class="btn sm" id="reload">刷新</button></div>
-      ${dataTable({
-        rows: dashboards,
-        columns: [
-          { title: '名称', render: (d) => `<div class="cell-main">${esc(d.name)}</div><div class="cell-sub">${esc(d.description || '')}</div>` },
-          { title: '卡片数', align: 'right', width: '90px', render: (d) => d.card_count },
-          { title: '创建时间', render: (d) => `<span class="dim">${fmt.dt(d.created_at)}</span>` },
-          { title: '操作', key: 'ops', render: (d) => `<a class="btn-link" data-view="${d.id}">查看</a><a class="btn-link danger" data-del="${d.id}">删除</a>` },
-        ],
-        emptyText: '还没有仪表盘', emptyHint: '让 Buddy「生成一份经营看板」，或手工新建',
-      })}
+      <div id="board-list"></div>
     </div>
     <div id="board" class="mt-16"></div>`;
 
-  const view = async (id) => {
-    const host = page.querySelector('#board');
-    host.innerHTML = loading('渲染看板…');
-    const out = await api.get(`/dashboards/${id}`);
-    host.innerHTML = `
-      <div class="row" style="justify-content:space-between;margin-bottom:12px">
-        <div><h3>${esc(out.dashboard.name)}</h3><div class="tiny dim">${esc(out.dashboard.description || '')}</div></div>
-        <span class="tag">${(out.cards || []).length} 张卡片</span>
-      </div>
-      <div class="grid-2">${(out.cards || []).map((c) => c.error
-        ? card(c.title, `<div class="tag red">渲染失败</div><div class="tiny mt-8">${esc(c.error)}</div>`)
-        : card(c.title, `${chartHTML(c.chart, c.columns, c.rows)}
-            <details class="mt-8"><summary class="tiny dim" style="cursor:pointer">明细</summary>
-              <div class="mt-8">${tableHTML(c.columns, c.rows, { max: 8 })}</div></details>`,
-            { sub: `${c.row_count} 行 · ${c.elapsed_ms} ms` })
-      ).join('')}</div>`;
+  const listHost = page.querySelector('#board-list');
+  const boardHost = page.querySelector('#board');
+  const state = { id: '', board: null, spec: {}, cards: [] };
+
+  const renderList = (rows) => {
+    listHost.innerHTML = dataTable({
+      rows,
+      columns: [
+        { title: '名称', render: (d) => `<div class="cell-main">${esc(d.name)}</div><div class="cell-sub">${esc(d.description || '')}</div>` },
+        { title: '卡片数', align: 'right', width: '90px', render: (d) => d.card_count },
+        { title: '创建时间', render: (d) => `<span class="dim">${fmt.dt(d.created_at)}</span>` },
+        { title: '操作', key: 'ops', render: (d) => `<a class="btn-link" data-view="${d.id}">查看</a><a class="btn-link danger" data-del="${d.id}">删除</a>` },
+      ],
+      emptyText: '还没有仪表盘', emptyHint: '让 Buddy「生成一份经营看板」，或手工新建',
+    });
+    listHost.querySelectorAll('[data-view]').forEach((b) => b.addEventListener('click', () => view(b.dataset.view)));
+    listHost.querySelectorAll('[data-del]').forEach((b) =>
+      b.addEventListener('click', async () => {
+        if (!(await confirmDialog('删除看板', '确认删除？', '删除'))) return;
+        await api.del(`/dashboards/${b.dataset.del}`);
+        ctx.refresh();
+      })
+    );
   };
 
-  page.querySelectorAll('[data-view]').forEach((b) => b.addEventListener('click', () => view(b.dataset.view)));
-  page.querySelectorAll('[data-del]').forEach((b) =>
-    b.addEventListener('click', async () => {
-      if (!(await confirmDialog('删除看板', '确认删除？', '删除'))) return;
-      await api.del(`/dashboards/${b.dataset.del}`);
-      ctx.refresh();
-    })
-  );
+  // 卡片定义：标题 + 只读 SQL + 图表类型
+  const boardCard = (c, i) => {
+    const type = (c.chart || {}).type || 'table';
+    const rows = c.rows || [];
+    const body = c.error
+      ? `<div class="tag red">渲染失败</div><div class="tiny mt-8">${esc(c.error)}</div>`
+      : type === 'table'
+        ? tableHTML(c.columns, rows, { max: 8 })
+        : `${chartHTML(c.chart, c.columns, rows)}
+          <details class="mt-8"><summary class="tiny dim" style="cursor:pointer">明细</summary>
+            <div class="mt-8">${tableHTML(c.columns, rows, { max: 8 })}</div></details>`;
+    const ops = `<div class="row" style="gap:10px;align-items:center">
+        <span draggable="true" data-drag="${i}" title="拖拽调整顺序" style="cursor:grab;color:var(--text-3);user-select:none;font-size:14px;line-height:1">⠿</span>
+        <a class="btn-link" data-card-edit="${i}">编辑</a>
+        <a class="btn-link danger" data-card-del="${i}">删除</a>
+      </div>`;
+    const sub = `${c.row_count ?? rows.length} 行${c.elapsed_ms != null ? ` · ${c.elapsed_ms} ms` : ''} · ${chartTypeLabel(type)}`;
+    return `<div data-card-idx="${i}" style="display:flex;flex-direction:column">
+      ${card(c.title || '未命名卡片', body, { sub, actions: ops })}
+    </div>`;
+  };
+
+  const renderBoard = () => {
+    const board = state.board || {};
+    boardHost.innerHTML = `
+      <div class="row" style="justify-content:space-between;margin-bottom:12px">
+        <div><h3>${esc(board.name || '')}</h3><div class="tiny dim">${esc(board.description || '')}</div></div>
+        <div class="row" style="gap:8px;align-items:center">
+          <span class="dim tiny">拖动 ⠿ 可排序</span>
+          <span class="tag">${state.cards.length} 张卡片</span>
+          <button class="btn sm primary" id="board-add">＋ 添加卡片</button>
+        </div>
+      </div>
+      <div class="grid-2">${state.cards.length
+        ? state.cards.map((c, i) => boardCard(c, i)).join('')
+        : `<div style="grid-column:1/-1"><div class="card">${emptyState('还没有卡片', '点右上角「添加卡片」，用一句话描述你想看的数据')}</div></div>`}
+      </div>`;
+    boardHost.querySelector('#board-add').addEventListener('click', addCard);
+    boardHost.querySelectorAll('[data-card-edit]').forEach((b) =>
+      b.addEventListener('click', () => openCardEditor(Number(b.dataset.cardEdit)))
+    );
+    boardHost.querySelectorAll('[data-card-del]').forEach((b) =>
+      b.addEventListener('click', () => removeCard(Number(b.dataset.cardDel)))
+    );
+    bindCardDragging(boardHost, reorderCards);
+  };
+
+  const view = async (id) => {
+    boardHost.innerHTML = loading('渲染看板…');
+    let out;
+    try {
+      out = await api.get(`/dashboards/${id}`);
+    } catch (err) {
+      boardHost.innerHTML = card('看板加载失败', `<div class="tag red">${esc(err.message || '请求失败')}</div>`);
+      return;
+    }
+    const board = out.dashboard || {};
+    state.id = board.id || id;
+    state.board = board;
+    state.spec = board.spec && typeof board.spec === 'object' ? board.spec : {};
+    state.cards = (out.cards || []).map((c) => ({ ...c }));
+    renderBoard();
+  };
+
+  // 卡片定义变更统一走 PATCH：spec.cards 整体替换
+  const saveCards = async (cards, message) => {
+    const stored = cards.map(toStoredCard);
+    await api.patch(`/dashboards/${state.id}`, { spec: { ...state.spec, cards: stored } });
+    state.spec = { ...state.spec, cards: stored };
+    state.cards = cards;
+    if (message) toast(message, 'ok');
+    renderBoard();
+    await refreshList();
+  };
+
+  const refreshList = async () => {
+    try {
+      const out = await api.get('/dashboards');
+      renderList(out.dashboards || []);
+    } catch {
+      // 列表刷新失败不影响看板编辑
+    }
+  };
+
+  // 添加卡片：一句话描述 → 语义层生成 → 追加到看板
+  const addCard = () => {
+    formModal({
+      title: '添加卡片',
+      wide: true,
+      submitText: '生成卡片',
+      fields: [
+        { label: '想看什么', name: 'prompt', type: 'textarea', rows: 3, required: true, placeholder: '例如：近 30 天按渠道的 GMV 趋势', hint: '按语义层指标口径编译 SQL，只读执行' },
+        { label: '时间窗口', name: 'period', type: 'select', options: CARD_PERIODS },
+      ],
+      onSubmit: async (d) => {
+        let res;
+        try {
+          res = await api.post('/analysis/dashboard/generate', { prompt: d.prompt, period: d.period });
+        } catch (err) {
+          throw new Error(err.message || '卡片生成失败');
+        }
+        const gen = (res.cards || [])[0];
+        if (!gen || !gen.sql) throw new Error('没有生成可用的卡片，请调整描述后重试');
+        await saveCards([...state.cards, cardFromGenerate(gen, d.prompt)], '卡片已添加');
+      },
+    });
+  };
+
+  const cardFromGenerate = (gen, prompt) => {
+    const metric = gen.metric || {};
+    const cols = gen.columns || [];
+    const dim = cols.length > 1 ? cols[0] : '';
+    const label = metric.display_name || metric.name || prompt || '新卡片';
+    return {
+      title: dim ? `${label} · 按${dim}` : label,
+      sql: gen.sql,
+      chart: chartSpecFor((gen.chart || {}).type || 'bar', cols, gen.rows, gen.chart),
+      source: { type: 'metric', ...(metric.name ? { metric: metric.name } : {}), ...(dim ? { dimension: dim } : {}) },
+    };
+  };
+
+  const dimOptions = (metricName, selected) => {
+    const m = metrics.find((x) => x.name === metricName);
+    const dims = (m && m.dimensions) || [];
+    const opts = [{ value: '', label: '总计' }, { value: '__date__', label: '按天趋势' }];
+    dims.filter((d) => d && d !== '__date__').forEach((d) => opts.push({ value: d, label: d }));
+    return opts.map((o) => `<option value="${esc(o.value)}"${o.value === (selected || '') ? ' selected' : ''}>${esc(o.label)}</option>`).join('');
+  };
+
+  // 编辑卡片：标题 / 图表类型 / 数据来源（注册指标或只读 SQL）
+  const openCardEditor = (idx) => {
+    const cur = state.cards[idx];
+    if (!cur) return;
+    const source = cur.source || {};
+    const metricName = source.metric || (cur.metric || {}).name || '';
+    const dimValue = source.dimension || '';
+    modal({
+      title: '编辑卡片',
+      wide: true,
+      body: `
+        <div class="col" style="gap:12px">
+          <div class="field"><label>卡片标题</label>
+            <input type="text" id="ce-title" value="${esc(cur.title || '')}" /></div>
+          <div class="field"><label>图表类型</label>
+            <select id="ce-type">${CARD_CHART_TYPES.map((t) => `<option value="${t.value}"${t.value === (cur.chart || {}).type ? ' selected' : ''}>${esc(t.label)}</option>`).join('')}</select></div>
+          <div class="field"><label>数据来源</label>
+            <select id="ce-source">
+              <option value="metric"${source.type !== 'sql' ? ' selected' : ''}>引用注册指标</option>
+              <option value="sql"${source.type === 'sql' ? ' selected' : ''}>只读 SQL</option>
+            </select>
+            <div class="hint">指标走统一语义层口径；SQL 仅允许单条只读查询，保存前会先试跑校验</div></div>
+          <div id="ce-metric-box">
+            <div class="field"><label>指标</label>
+              <select id="ce-metric">${metrics.map((m) => `<option value="${esc(m.name)}"${m.name === metricName ? ' selected' : ''}>${esc(m.display_name || m.name)}</option>`).join('')}</select></div>
+            <div class="field"><label>维度</label><select id="ce-dim">${dimOptions(metricName, dimValue)}</select></div>
+          </div>
+          <div id="ce-sql-box"><div class="field"><label>只读 SQL</label>
+            <textarea id="ce-sql" rows="5" placeholder="select ...">${esc(cur.sql || '')}</textarea></div></div>
+        </div>`,
+      actions: [
+        { label: '取消', value: false },
+        {
+          label: '保存',
+          primary: true,
+          onClick: async (content) => {
+            const title = content.querySelector('#ce-title').value.trim();
+            if (!title) {
+              toast('请填写卡片标题', 'err');
+              return false;
+            }
+            const type = content.querySelector('#ce-type').value;
+            const src = content.querySelector('#ce-source').value;
+            let next;
+            try {
+              if (src === 'metric') {
+                const name = content.querySelector('#ce-metric').value;
+                const dim = content.querySelector('#ce-dim').value;
+                const q = await api.post('/metrics/query', { metric: name, dimensions: dim ? [dim] : [], granularity: dim === '__date__' ? 'day' : null });
+                next = {
+                  title,
+                  sql: q.sql,
+                  chart: chartSpecFor(type, q.columns, q.rows, { ...(cur.chart || {}), type }),
+                  columns: q.columns,
+                  rows: q.rows,
+                  source: { type: 'metric', metric: name, dimension: dim },
+                };
+              } else {
+                const sql = content.querySelector('#ce-sql').value.trim();
+                if (!sql) {
+                  toast('请填写只读 SQL', 'err');
+                  return false;
+                }
+                const run = await api.post('/sql/run', { sql, limit: 200 });
+                next = {
+                  title,
+                  sql,
+                  chart: chartSpecFor(type, run.columns, run.rows, { ...(cur.chart || {}), type }),
+                  columns: run.columns,
+                  rows: run.rows,
+                  source: { type: 'sql' },
+                };
+              }
+            } catch (err) {
+              toast(err.message || '数据源校验失败', 'err');
+              return false;
+            }
+            const cards = state.cards.slice();
+            cards[idx] = next;
+            try {
+              await saveCards(cards, '卡片已更新');
+            } catch (err) {
+              toast(err.message || '保存失败', 'err');
+              return false;
+            }
+            return true;
+          },
+        },
+      ],
+      onMount: (content) => {
+        const sourceSel = content.querySelector('#ce-source');
+        const metricSel = content.querySelector('#ce-metric');
+        const dimSel = content.querySelector('#ce-dim');
+        const sync = () => {
+          const isMetric = sourceSel.value === 'metric';
+          content.querySelector('#ce-metric-box').style.display = isMetric ? '' : 'none';
+          content.querySelector('#ce-sql-box').style.display = isMetric ? 'none' : '';
+        };
+        sourceSel.addEventListener('change', sync);
+        metricSel.addEventListener('change', () => {
+          dimSel.innerHTML = dimOptions(metricSel.value, '');
+        });
+        sync();
+      },
+    });
+  };
+
+  const removeCard = async (idx) => {
+    const cur = state.cards[idx];
+    if (!cur) return;
+    if (!(await confirmDialog('删除卡片', `确认删除「${cur.title || '未命名卡片'}」？`, '删除'))) return;
+    try {
+      await saveCards(state.cards.filter((_, i) => i !== idx), '卡片已删除');
+    } catch (err) {
+      toast(err.message || '删除失败', 'err');
+    }
+  };
+
+  const reorderCards = async (from, to, after) => {
+    if (from === to) return;
+    const next = moveCard(state.cards, from, to, after);
+    if (next.every((c, i) => c === state.cards[i])) return;
+    try {
+      await saveCards(next, '顺序已保存');
+    } catch (err) {
+      toast(err.message || '顺序保存失败', 'err');
+      renderBoard();
+    }
+  };
+
+  renderList(dashboards);
   page.querySelector('#reload').addEventListener('click', () => ctx.refresh());
-  const first = page.querySelector('[data-view]');
+  const first = listHost.querySelector('[data-view]');
   if (first) view(first.dataset.view);
 }
 

@@ -324,8 +324,8 @@ export async function renderSettings(page, ctx) {
           <div class="field"><label>Webhook</label>
             <input id="n-hook" value="${esc(notify.webhook || '')}" placeholder="https://your-domain/alert" /></div>
           <div class="field"><label>邮件</label>
-            <input id="n-email" value="${esc(notify.email || '')}" placeholder="data-team@example.com" disabled />
-            <div class="hint">邮件需配置 SMTP，v0.3 开放；当前可先用企业微信 / Webhook</div></div>
+            <input id="n-email" value="${esc(notify.email || '')}" placeholder="data-team@example.com" />
+            <div class="hint">邮件通过 SMTP 投递，需在平台设置中配置服务器（DATABUDDY_SMTP_HOST / DATABUDDY_SMTP_USER / DATABUDDY_SMTP_PASSWORD）。</div></div>
           <div class="row"><button class="btn primary" id="n-save">保存</button>
             <button class="btn" id="n-test">发送测试消息</button>
             <span id="n-out" class="tiny"></span></div>`,
@@ -338,7 +338,7 @@ export async function renderSettings(page, ctx) {
           <div class="row"><button class="btn primary" id="g-save">保存</button>
             <button class="btn" id="g-test">测试连接</button>
             <span id="g-out" class="tiny"></span></div>
-          <div class="hint" style="margin-top:10px">用于 Studio 文件的版本管理；测试会用 <code class="inline">git ls-remote</code> 实际探测。</div>`)}
+          <div class="hint" style="margin-top:10px">用于 Studio 文件的版本管理；测试优先用 <code class="inline">git ls-remote</code> 实际探测分支，未安装 git 时退回 HTTP 探测。</div>`)}
       </div>
       <div class="col" style="gap:16px">
         ${card('workspace_rule.md', `<div class="tiny dim" style="margin-bottom:8px">

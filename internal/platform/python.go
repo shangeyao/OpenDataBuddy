@@ -45,6 +45,50 @@ func stopKernel(key string) {
 		}
 	}
 }
+// pythonInterpreter resolves a usable Python 3.10+ interpreter and explains why
+// it is unusable. Without it a missing interpreter surfaces as a dead process
+// with no actionable message, which is the common failure on Windows.
+func pythonInterpreter() (string, string) {
+	candidates := []string{}
+	if custom := env("DATABUDDY_PYTHON", ""); custom != "" {
+		candidates = append(candidates, custom)
+	} else {
+		candidates = append(candidates, "python3", "python")
+	}
+	reasons := []string{}
+	for _, name := range candidates {
+		path, err := exec.LookPath(name)
+		if err != nil {
+			reasons = append(reasons, name+" 不在 PATH 中")
+			continue
+		}
+		out, err := exec.Command(path, "--version").Output()
+		if err != nil {
+			reasons = append(reasons, path+" 无法执行")
+			continue
+		}
+		version := strings.TrimSpace(string(out))
+		match := regexp.MustCompile(`Python 3\.(\d+)`).FindStringSubmatch(version)
+		if match == nil {
+			reasons = append(reasons, path+" 不是 Python 3")
+			continue
+		}
+		if len(match[1]) < 2 || match[1][0] < '1' || (match[1][0] == '1' && match[1][1] < '0') {
+			reasons = append(reasons, path+" 版本过低（"+version+"）")
+			continue
+		}
+		return path, ""
+	}
+	return "", "未找到可用的 Python 解释器（" + strings.Join(reasons, "；") + "）。请安装 Python 3.10 及以上版本，或用 DATABUDDY_PYTHON 指定解释器路径。"
+}
+
+// pythonAvailable reports whether a usable interpreter exists, so callers can
+// degrade instead of failing when Python is not installed.
+func pythonAvailable() bool {
+	_, reason := pythonInterpreter()
+	return reason == ""
+}
+
 func (a *App) python(key, source string, params M) M {
 	a.ownedKernels.Store(key, true)
 	kernels.Lock()
@@ -57,7 +101,11 @@ func (a *App) python(key, source string, params M) M {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	if k.cmd == nil {
-		cmd := exec.Command(env("DATABUDDY_PYTHON", "python3"), "-I", "-u", filepath.Join(a.Root, "scripts", "python_kernel.py"))
+		bin, reason := pythonInterpreter()
+		if reason != "" {
+			fail(503, "Python 执行器不可用："+reason)
+		}
+		cmd := exec.Command(bin, "-I", "-u", filepath.Join(a.Root, "scripts", "python_kernel.py"))
 		in, e := cmd.StdinPipe()
 		if e != nil {
 			fail(500, e.Error())

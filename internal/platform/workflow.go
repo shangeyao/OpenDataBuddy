@@ -69,8 +69,27 @@ func (a *App) flowShape(f M) M {
 	if f["schedule_text"] == "" {
 		f["schedule_text"] = "仅手动触发"
 	}
+	switch str(f["run_mode"]) {
+	case "once":
+		f["schedule_text"] = "单次运行：" + str(f["run_at"])
+	case "event":
+		f["schedule_text"] = "事件触发"
+		f["trigger_url"] = "/api/workflows/trigger/" + str(f["trigger_key"])
+	}
 	f["last_run"] = a.row("SELECT * FROM flow_runs WHERE flow_id=? ORDER BY started_at DESC LIMIT 1", f["id"])
 	return f
+}
+
+// parseRunAt accepts RFC3339 and "YYYY-MM-DD HH:MM" in the flow timezone.
+func parseRunAt(value, tz string) (time.Time, error) {
+	if t, e := time.Parse(time.RFC3339, value); e == nil {
+		return t, nil
+	}
+	loc, e := time.LoadLocation(firstNonempty(tz, "Asia/Shanghai"))
+	if e != nil {
+		loc = time.UTC
+	}
+	return time.ParseInLocation("2006-01-02 15:04", value, loc)
 }
 func normalizeNodes(m M) {
 	cc := arr(m["nodes"])
@@ -97,12 +116,29 @@ func (a *App) newFlow(ws string, m M) M {
 	if str(m["name"]) == "" {
 		fail(422, "工作流名称不能为空")
 	}
-	f := M{"id": id(), "workspace_id": ws, "name": m["name"], "description": def(m, "description", ""), "nodes": m["nodes"], "edges": arr(m["edges"]), "params": obj(m["params"]), "cron": def(m, "cron", ""), "enabled": def(m, "enabled", false), "run_mode": def(m, "run_mode", "cron"), "interval_seconds": mathMax(60, num(def(m, "interval_seconds", 60))), "timezone": firstNonempty(str(m["timezone"]), "Asia/Shanghai"), "retries": def(m, "retries", 0), "created_at": now(), "updated_at": now()}
+	mode := str(def(m, "run_mode", "cron"))
+	switch mode {
+	case "cron", "continuous", "manual", "once", "event":
+	default:
+		fail(422, "未知的运行方式")
+	}
+	f := M{"id": id(), "workspace_id": ws, "name": m["name"], "description": def(m, "description", ""), "nodes": m["nodes"], "edges": arr(m["edges"]), "params": obj(m["params"]), "cron": def(m, "cron", ""), "enabled": def(m, "enabled", false), "run_mode": mode, "run_at": def(m, "run_at", ""), "trigger_key": def(m, "trigger_key", ""), "interval_seconds": mathMax(60, num(def(m, "interval_seconds", 60))), "timezone": firstNonempty(str(m["timezone"]), "Asia/Shanghai"), "retries": def(m, "retries", 0), "created_at": now(), "updated_at": now()}
 	if str(f["cron"]) != "" {
 		cronMatches(str(f["cron"]), time.Now())
 	}
 	if _, e := time.LoadLocation(str(f["timezone"])); e != nil {
 		fail(422, "时区无效")
+	}
+	if mode == "once" {
+		if str(f["run_at"]) == "" {
+			fail(422, "单次运行必须指定触发时间 run_at")
+		}
+		if _, e := parseRunAt(str(f["run_at"]), str(f["timezone"])); e != nil {
+			fail(422, "触发时间格式无效，应为 RFC3339 或 YYYY-MM-DD HH:MM")
+		}
+	}
+	if mode == "event" && str(f["trigger_key"]) == "" {
+		f["trigger_key"] = "evt_" + id()
 	}
 	a.insert("flows", f)
 	return a.flowShape(a.owned("flows", str(f["id"]), ws))
@@ -483,7 +519,26 @@ func (a *App) workflowDecision(c *request, p M, action string) M {
 	return M{"run": a.runFlowState(c.WS, snapshot, params, "approval", 0, state)}
 }
 func (a *App) workflowRoutes() []route {
-	r := []route{}
+	r := []route{
+		route{"POST", "/api/workflows/trigger/{key}", true, false, func(c *request) any {
+			key := c.p("key")
+			f := a.row("SELECT * FROM flows WHERE trigger_key=? AND enabled=1", key)
+			if f == nil {
+				fail(404, "触发密钥无效")
+			}
+			if str(f["run_mode"]) != "event" {
+				fail(409, "该工作流不是事件触发模式")
+			}
+			params := obj(c.Body["params"])
+			if len(params) == 0 {
+				params = obj(c.Body)
+			}
+			ws := str(f["workspace_id"])
+			a.audit(ws, "", "workflow_event_trigger", str(f["name"]))
+			run := a.runFlow(ws, f, params, "event", 0)
+			return M{"run": run, "flow_id": f["id"], "flow": str(f["name"]), "params": params}
+		}},
+	}
 	for _, base := range []string{"/workflows", "/flows"} {
 		base := base
 		plural, singular := "workflows", "workflow"

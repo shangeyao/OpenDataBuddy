@@ -9298,7 +9298,7 @@
           "ops-ext"
         ],
         "summary": "Test Channel",
-        "description": "发一条模拟测试告警（不发起真实外部请求）。",
+        "description": "发一条测试告警（真实出网投递；设 DATABUDDY_ALERT_SIMULATE=1 时退回本地模拟）。",
         "operationId": "test_channel_api_alerts_channels__channel_id__test_post",
         "parameters": [
           {

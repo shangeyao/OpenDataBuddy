@@ -105,6 +105,18 @@ func (a *App) workspace(u M, w string) string {
 }
 
 type Handler func(*request) any
+
+// auditRead marks the read endpoints that expose data or run statements, so
+// data access leaves a trace next to the write operations.
+func auditRead(path string) bool {
+	for _, p := range []string{"/api/sql/run", "/api/catalog/preview", "/api/analysis/ask", "/api/analysis/attribute", "/api/analysis/dashboard/generate", "/api/quality/profile", "/api/governance/scan", "/api/serving/services/", "/api/knowledge-search"} {
+		if strings.Contains(path, p) {
+			return true
+		}
+	}
+	return false
+}
+
 type route struct {
 	Method, Path   string
 	Public, Global bool
@@ -150,8 +162,12 @@ func (a *App) route(s *ghttp.Server, rt route) {
 			}
 		}
 		out := rt.Handler(c)
-		if !rt.Public && rt.Method != "GET" {
-			a.audit(c.WS, str(c.User["id"]), strings.ToLower(rt.Method)+" "+rt.Path, r.URL.Path)
+		if !rt.Public {
+			if rt.Method != "GET" {
+				a.audit(c.WS, str(c.User["id"]), strings.ToLower(rt.Method)+" "+rt.Path, r.URL.Path)
+			} else if auditRead(rt.Path) {
+				a.audit(c.WS, str(c.User["id"]), "read "+rt.Path, r.URL.Path)
+			}
 		}
 		if out != nil {
 			r.Response.WriteJson(out)
@@ -183,6 +199,8 @@ func (a *App) routesWithoutDocs() []route {
 	r = append(r, a.mlopsRoutes()...)
 	r = append(r, a.bundleRoutes()...)
 	r = append(r, a.ingestRoutes()...)
+	r = append(r, a.egressRoutes()...)
+	r = append(r, a.syncRoutes()...)
 	r = append(r, a.governanceRoutes()...)
 	r = append(r, a.analysisRoutes()...)
 	r = append(r, a.driftRoutes()...)

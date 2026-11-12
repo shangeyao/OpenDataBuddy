@@ -174,7 +174,7 @@ export async function renderOps2(page, ctx) {
     const rules = ruleRes.rules || [];
     const deliveries = dlRes.deliveries || [];
 
-    // 5 种渠道卡片：已配置的显示状态，未配置的显示「未配置」
+    // 每种渠道一张卡片：已配置的显示状态，未配置的显示「未配置」
     const channelCards = channelTypes.map((t) => {
       const configured = channels.filter((c) => c.type === t.type);
       const ch = configured[0];
@@ -208,7 +208,7 @@ export async function renderOps2(page, ctx) {
     body.innerHTML = `
       <div class="card-head" style="padding:0 0 10px">
         <div><h3>告警渠道</h3>
-          <div class="sub">5 种渠道 · 离线模拟投递（不发起真实外部请求）· 同一事件 5 分钟内去重抑制</div></div>
+          <div class="sub">${channelTypes.length || 6} 种渠道 · 真实出网投递（设 DATABUDDY_ALERT_SIMULATE=1 可退回离线模拟）· 同一事件 5 分钟内去重抑制</div></div>
         <button class="btn sm" id="emit-test">手动触发一次事件</button>
       </div>
       <div class="grid-3" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px">
@@ -523,7 +523,8 @@ async function newChannel(ctx, type, types, refresh, existing) {
     wide: true,
     intro: `<div class="info-strip" style="margin-bottom:12px">
       <span class="tag blue">${esc(spec.label)}</span>
-      开源版本地<b>模拟投递</b>：不会发起真实外部请求，配置只用于生成应发报文并落库。</div>`,
+      告警与报告推送会<b>真实出网投递</b>到该目标；如需离线演练，请设置环境变量
+      <code>DATABUDDY_ALERT_SIMULATE=1</code>，此时只生成应发报文并落库。</div>`,
     fields,
     submitText: existing ? '保存' : '创建',
     onSubmit: async (d) => {

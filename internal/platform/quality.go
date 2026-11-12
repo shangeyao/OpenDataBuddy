@@ -77,6 +77,98 @@ func (a *App) prepareRule(ws string, m M) M {
 	}
 	return r
 }
+
+// looksLikeKey reports whether a column name follows the usual key naming
+// convention, which makes it a candidate for a uniqueness rule.
+func looksLikeKey(name string) bool {
+	n := strings.ToLower(name)
+	for _, s := range []string{"id", "no", "code", "key", "uuid"} {
+		if n == s || strings.HasSuffix(n, "_"+s) {
+			return true
+		}
+	}
+	return false
+}
+
+// suggestQualityRules recommends rules from the actual profile of a table
+// instead of a fixed placeholder. Every suggestion carries the threshold it
+// was derived from and a human readable reason. Sampling is used for large
+// tables; rules whose threshold must be exact (range, enum) are only offered
+// when the whole table was profiled.
+func (a *App) suggestQualityRules(ws, ref string) M {
+	t := a.resolve(ws, ref)
+	prof := a.profile(ws, M{"table_ref": t["ref"], "mode": "inference"})
+	total := num(prof["row_count"])
+	complete := total < 5000
+	rules := []M{}
+	for _, raw := range arr(prof["columns"]) {
+		s := obj(raw)
+		name := str(s["name"])
+		if name == "" {
+			continue
+		}
+		cnt := num(s["count"])
+		nullRate := num(s["null_rate"])
+		distinct := num(s["distinct_count"])
+		kind := str(s["kind"])
+		typ := strings.ToUpper(str(s["data_type"]))
+
+		if nullRate > 0 {
+			rate := nullRate
+			if !complete {
+				rate = nullRate + 0.01
+			}
+			rules = append(rules, M{
+				"table_ref": t["ref"], "column_name": name, "rule_type": "not_null",
+				"config":   M{"max_rate": rate},
+				"reason":   fmt.Sprintf("当前空值率 %.2f%%，据此设定空值率上限", nullRate*100),
+				"priority": "high",
+			})
+		}
+		if cnt > 1 && distinct >= cnt && (looksLikeKey(name) || (complete && cnt >= 100)) {
+			rules = append(rules, M{
+				"table_ref": t["ref"], "column_name": name, "rule_type": "unique",
+				"config":   M{"max_dup": 0},
+				"reason":   fmt.Sprintf("%g 行取值全部互异，可作唯一性监控", cnt),
+				"priority": "medium",
+			})
+		}
+		if kind == "numeric" && complete && cnt > 0 {
+			lo, hi := num(s["min"]), num(s["max"])
+			if hi > lo {
+				rules = append(rules, M{
+					"table_ref": t["ref"], "column_name": name, "rule_type": "range",
+					"config":   M{"min": lo, "max": hi},
+					"reason":   fmt.Sprintf("历史取值范围 [%g, %g]", lo, hi),
+					"priority": "medium",
+				})
+			}
+		}
+		if complete && distinct >= 1 && distinct <= 10 && distinct < cnt {
+			values := []any{}
+			for _, tv := range arr(s["top_values"]) {
+				values = append(values, obj(tv)["value"])
+			}
+			if len(values) > 0 {
+				rules = append(rules, M{
+					"table_ref": t["ref"], "column_name": name, "rule_type": "enum",
+					"config":   M{"values": values},
+					"reason":   fmt.Sprintf("基数 %g，枚举 %d 个取值", distinct, len(values)),
+					"priority": "medium",
+				})
+			}
+		}
+		if strings.Contains(typ, "TIMESTAMP") || strings.Contains(typ, "DATE") {
+			rules = append(rules, M{
+				"table_ref": t["ref"], "column_name": name, "rule_type": "freshness",
+				"config":   M{"max_hours": 24},
+				"reason":   "时间字段，建议监控数据新鲜度",
+				"priority": "low",
+			})
+		}
+	}
+	return M{"table_ref": t["ref"], "rules": rules, "count": len(rules), "row_count": total, "complete": complete}
+}
 func (a *App) runRule(ws string, r M) (out M) {
 	out = M{"rule_id": r["id"], "table_ref": r["table_ref"], "column_name": r["column_name"], "rule_type": r["rule_type"], "status": "error", "value": nil, "detail": "", "ran_at": now()}
 	defer func() {
@@ -428,6 +520,13 @@ func (a *App) qualityRoutes() []route {
 			return M{"rule_types": metadata["rule_types"], "severities": []M{{"value": "info", "label": "提示"}, {"value": "warning", "label": "告警"}, {"value": "critical", "label": "严重"}}, "profile_modes": metadata["profile_modes"], "drift_metrics": metadata["drift_metrics"], "histogram_bins": 10}
 		}},
 		route{"POST", "/api/quality/precheck", false, false, func(c *request) any { return a.runRules(c.WS, str(a.resolve(c.WS, refOf(c.Body))["ref"]), true) }},
+		route{"GET", "/api/quality/suggest", false, false, func(c *request) any {
+			ref := c.q("table")
+			if ref == "" {
+				fail(422, "缺少 table 参数")
+			}
+			return a.suggestQualityRules(c.WS, ref)
+		}},
 		route{"POST", "/api/quality/rules/validate", false, false, func(c *request) any {
 			rr := parseRules(c.Body)
 			return M{"ok": true, "rules": rr, "count": len(rr), "issues": []M{}}

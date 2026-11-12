@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 )
 
 type M = map[string]any
@@ -88,6 +89,31 @@ func def(m M, k string, v any) any {
 }
 func js(v any) string       { b, e := json.Marshal(v); must(e); return string(b) }
 func quote(s string) string { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"` }
+
+// lakeName turns a display name into a safe SQL identifier. Unicode letters are
+// kept, so a catalog named with Chinese text still lands in the lake.
+func lakeName(name string) string {
+	out := []rune{}
+	for _, r := range name {
+		switch {
+		case r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r):
+			out = append(out, r)
+		default:
+			out = append(out, '_')
+		}
+	}
+	s := string(out)
+	if s == "" {
+		s = "catalog"
+	}
+	if unicode.IsDigit(rune(s[0])) {
+		s = "c_" + s
+	}
+	if len([]rune(s)) > 64 {
+		s = string([]rune(s)[:64])
+	}
+	return s
+}
 func must(e error) {
 	if e != nil {
 		panic(e)
@@ -247,6 +273,7 @@ func Open(root, dir string) (app *App, err error) {
 	}
 	a := &App{DB: db, Lake: lake, Dir: dir, Root: root, columns: map[string]map[string]bool{}}
 	app = a
+	applyExtraTools()
 	schema, e := assets.ReadFile("assets/schema.sql")
 	if e != nil {
 		return nil, e

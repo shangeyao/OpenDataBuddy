@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -77,17 +78,87 @@ func assessSQL(q string) (out M) {
 	guard(q)
 	return
 }
+// sensitiveSpec describes one sensitive data class: how a column is named and
+// what its values look like.
+type sensitiveSpec struct {
+	Pattern      string
+	Tag          string
+	Label        string
+	Level        string
+	ValuePattern string
+}
+
+var sensitiveSpecs = []sensitiveSpec{
+	{Pattern: "id_card|idcard|身份证|证件号", Tag: "id_card", Label: "身份证号", Level: "L4", ValuePattern: `^[1-9]\d{5}(19|20)\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\d{3}[\dXx]$`},
+	{Pattern: "bank_card|bankcard|银行卡|card_no", Tag: "bank_card", Label: "银行卡号", Level: "L4", ValuePattern: `^\d{16,19}$`},
+	{Pattern: "phone|mobile|手机号|电话", Tag: "phone", Label: "手机号", Level: "L3", ValuePattern: `^1[3-9]\d{9}$`},
+	{Pattern: "email|邮箱", Tag: "email", Label: "邮箱", Level: "L2", ValuePattern: `^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$`},
+}
+
+// matchSensitiveSpec finds the class a column name belongs to.
+func matchSensitiveSpec(name string) *sensitiveSpec {
+	for i := range sensitiveSpecs {
+		if regexp.MustCompile(sensitiveSpecs[i].Pattern).MatchString(name) {
+			return &sensitiveSpecs[i]
+		}
+	}
+	return nil
+}
+
+// sampleSensitive reads a bounded sample of a column and reports how many values
+// match the pattern, so the grading reflects what the data actually holds.
+func (a *App) sampleSensitive(table, column, pattern string) (hit, total int, ratio float64) {
+	defer func() {
+		if e := recover(); e != nil {
+			hit, total, ratio = 0, 0, 0
+		}
+	}()
+	re := regexp.MustCompile(pattern)
+	rows := rows(a.Lake, "SELECT "+quote(column)+" AS v FROM "+table+" WHERE "+quote(column)+" IS NOT NULL LIMIT 200")
+	for _, r := range rows {
+		v := strings.TrimSpace(str(r["v"]))
+		if v == "" {
+			continue
+		}
+		total++
+		if re.MatchString(v) {
+			hit++
+		}
+	}
+	if total > 0 {
+		ratio = float64(hit) / float64(total)
+	}
+	return
+}
+
+// scan grades sensitive columns by name and by sampled values, so the level and
+// the confidence reflect evidence instead of a constant.
 func (a *App) scan(ws, ref string) M {
 	t := a.resolve(ws, ref)
-	cols := a.rows("SELECT * FROM columns WHERE table_id=?", t["id"])
+	cols := a.rows("SELECT * FROM columns WHERE table_id=? ORDER BY ordinal", t["id"])
 	findings := []M{}
 	for _, c := range cols {
 		name := strings.ToLower(str(c["name"]))
-		for _, spec := range []struct{ Pattern, Tag, Label string }{{"phone|mobile|手机号|电话", "phone", "手机号"}, {"email|邮箱", "email", "邮箱"}, {"id_card|身份证", "id_card", "身份证号"}, {"bank_card|银行卡", "bank_card", "银行卡号"}} {
-			if regexp.MustCompile(spec.Pattern).MatchString(name) {
-				findings = append(findings, M{"column_id": c["id"], "column": c["name"], "column_name": c["name"], "tag": spec.Tag, "label": spec.Label, "level": "L3", "confidence": 0.95, "evidence": "字段名匹配敏感信息规则"})
-			}
+		spec := matchSensitiveSpec(name)
+		hit, total, ratio := 0, 0, float64(0)
+		if spec != nil {
+			hit, total, ratio = a.sampleSensitive(physical(t), str(c["name"]), spec.ValuePattern)
 		}
+		if spec == nil {
+			continue
+		}
+		level := "L2"
+		confidence := 0.6
+		evidence := "字段名匹配敏感信息规则，取值未验证"
+		switch {
+		case hit > 0:
+			level = spec.Level
+			confidence = 0.95
+			evidence = fmt.Sprintf("字段名匹配且取值抽样命中 %d/%d 条", hit, total)
+		case total > 0:
+			evidence = fmt.Sprintf("字段名匹配，取值抽样 %d 条未命中该格式", total)
+		}
+		findings = append(findings, M{"column_id": c["id"], "column": c["name"], "column_name": c["name"], "tag": spec.Tag, "label": spec.Label, "level": level, "confidence": confidence, "evidence": evidence, "sample_total": total, "sample_hit": hit, "sample_ratio": ratio})
 	}
 	return M{"table_ref": t["ref"], "table": t, "findings": findings, "columns": findings, "count": len(findings)}
 }
@@ -164,6 +235,96 @@ func (a *App) lineageGraph(ws, ref, direction string, depth int) M {
 	}
 	return M{"nodes": nodes, "edges": out, "root": ref, "table_ref": ref, "direction": direction, "depth": depth}
 }
+// assessPrincipal evaluates an on-behalf-of delegation: the effective principal
+// may act for the principal only when the workspace policy allows it.
+func (a *App) assessPrincipal(ws, principal, effective string) M {
+	principal = strings.TrimSpace(principal)
+	effective = strings.TrimSpace(effective)
+	if effective == "" {
+		effective = principal
+	}
+	delegated := principal != "" && effective != "" && principal != effective
+	out := M{"principal": principal, "effective_principal": effective, "delegated": delegated, "check": M{"allowed": true, "reason": "本人操作"}}
+	if !delegated {
+		return out
+	}
+	policy := a.oboPolicy(ws)
+	for _, v := range arr(policy["allowed"]) {
+		if strings.EqualFold(str(v), effective) {
+			out["check"] = M{"allowed": true, "reason": "该主体已被授权代 " + principal + " 操作"}
+			return out
+		}
+	}
+	if str(policy["default"]) == "allow" {
+		out["check"] = M{"allowed": true, "reason": "工作空间策略允许任意代操作"}
+		return out
+	}
+	out["check"] = M{"allowed": false, "reason": "该主体未被授权代 " + principal + " 操作"}
+	return out
+}
+
+// oboPolicy reads the workspace delegation policy.
+func (a *App) oboPolicy(ws string) M {
+	policy := M{"allowed": []any{}, "default": "deny"}
+	if raw := a.setting("obo_policy." + ws); raw != "" {
+		json.Unmarshal([]byte(raw), &policy)
+	}
+	return policy
+}
+
+// assessTool scores a tool call against the three security factors, resolves the
+// acting principal and reports whether the call must be approved by a human.
+func (a *App) assessTool(ws, name string, args M, ctx M) M {
+	write := false
+	for _, v := range arr(metadata["tool_catalog"]) {
+		m := obj(v)
+		if m["name"] == name {
+			write = m["risk"] != "read"
+		}
+	}
+	sensitive := false
+	for _, t := range a.tables(ws) {
+		if strings.Contains(js(args), str(t["ref"])) || strings.Contains(js(args), str(t["name"])) {
+			if a.row("SELECT ct.id FROM column_tags ct JOIN columns c ON c.id=ct.column_id WHERE c.table_id=? AND ct.level IN ('L3','L4') LIMIT 1", t["id"]) != nil {
+				sensitive = true
+			}
+		}
+	}
+	untrusted := false
+	for _, key := range []string{"sql", "content", "code", "expr", "expression", "text", "description"} {
+		if str(args[key]) != "" {
+			untrusted = true
+		}
+	}
+	if boolOf(ctx["sensitive_data"]) {
+		sensitive = true
+	}
+	factors := []M{
+		{"key": "untrusted_input", "label": "输入不可信", "hit": untrusted},
+		{"key": "state_change", "label": "会改变状态", "hit": write},
+		{"key": "sensitive_data", "label": "触及敏感数据", "hit": sensitive},
+	}
+	risk := "low"
+	if write {
+		risk = "medium"
+	}
+	if write && sensitive {
+		risk = "high"
+	}
+	approval := a.toolApproval(ws, name, args)
+	obo := a.assessPrincipal(ws, str(def(ctx, "principal", "")), str(def(ctx, "effective_principal", "")))
+	check := obj(obo["check"])
+	allowed := !approval && boolOf(check["allowed"])
+	action := "allow"
+	if approval {
+		action = "block"
+	}
+	if !boolOf(check["allowed"]) {
+		action = "block"
+	}
+	return M{"tool": name, "risk": risk, "requires_approval": approval, "allowed": allowed, "action": action, "args": args, "three_factors": factors, "obo": obo}
+}
+
 func (a *App) governanceRoutes() []route {
 	r := []route{
 		{"GET", "/api/security/policy", false, false, func(c *request) any {
@@ -172,17 +333,29 @@ func (a *App) governanceRoutes() []route {
 		{"GET", "/api/security/owasp", false, false, func(c *request) any { return metadata["owasp"] }},
 		{"POST", "/api/security/check-input", false, false, func(c *request) any {
 			out := checkInput(c.s("text"))
+			out["obo"] = a.assessPrincipal(c.WS, str(def(c.Body, "principal", c.User["email"])), str(def(c.Body, "effective_principal", c.User["email"])))
 			a.audit(c.WS, str(c.User["id"]), "security_input", str(out["action"]))
 			return out
 		}},
 		{"POST", "/api/security/check-output", false, false, func(c *request) any { return checkOutput(c.s("text")) }},
 		{"POST", "/api/security/assess-sql", false, false, func(c *request) any { return assessSQL(c.s("sql")) }},
 		{"POST", "/api/security/assess-tool", false, false, func(c *request) any {
-			args := obj(c.Body["args"])
-			write := strings.HasPrefix(c.s("tool"), "create_") || strings.HasPrefix(c.s("tool"), "apply_")
-			sensitive := boolOf(obj(c.Body["context"])["sensitive_data"])
-			required := write && sensitive
-			return M{"risk": map[bool]string{true: "high", false: "low"}[required], "requires_approval": required, "allowed": !required, "action": map[bool]string{true: "block", false: "allow"}[required], "args": args}
+			return a.assessTool(c.WS, str(c.Body["tool"]), obj(c.Body["args"]), obj(c.Body["context"]))
+		}},
+		{"GET", "/api/security/obo", false, false, func(c *request) any {
+			policy := a.oboPolicy(c.WS)
+			return M{"policy": policy, "principal": str(c.User["email"]), "evaluation": a.assessPrincipal(c.WS, str(c.User["email"]), str(c.User["email"]))}
+		}},
+		{"PUT", "/api/security/obo", false, false, func(c *request) any {
+			allowed := []any{}
+			for _, v := range arr(c.Body["allowed"]) {
+				if s := strings.TrimSpace(str(v)); s != "" {
+					allowed = append(allowed, s)
+				}
+			}
+			policy := M{"allowed": allowed, "default": str(def(c.Body, "default", "deny"))}
+			a.setSetting("obo_policy."+c.WS, js(policy))
+			return M{"policy": policy}
 		}},
 		{"POST", "/api/governance/scan", false, false, func(c *request) any { return a.scan(c.WS, refOf(c.Body)) }},
 		{"GET", "/api/governance/tags", false, false, func(c *request) any {

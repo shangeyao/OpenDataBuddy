@@ -19,3 +19,9 @@ node_modules/
 /bin/
 /opendatabuddy
 /opendatabuddy.exe
+
+# 本机启动脚本（不入库）
+/start-lan.ps1
+/stop-lan.ps1
+/.tmp-data/
+/.tmp-temp/

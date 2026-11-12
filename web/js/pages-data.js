@@ -194,7 +194,7 @@ export async function renderIngest(page, ctx) {
             <div class="field"><label>表描述</label><input id="tdesc" placeholder="可选，便于后续检索" /></div>
             <div class="field"><label><span class="req">*</span>选择文件</label>
               <input type="file" id="file" accept=".csv,.json,.ndjson,.jsonl,.parquet,.xlsx" />
-              <div class="hint">支持 CSV / JSON / NDJSON / Parquet / XLSX，单文件 ≤ 200MB，自动推断字段类型</div></div>
+              <div class="hint">支持 CSV / JSON / NDJSON / Parquet / XLSX，单文件 ≤ 128MB，自动推断字段类型</div></div>
             <div class="row"><button class="btn primary" id="do-upload">上传并建表</button>
               <span class="tiny dim">解析在本地完成，文件不会离开本机</span></div>
             <div id="upload-result" class="mt-16"></div>`, { flush: false })}

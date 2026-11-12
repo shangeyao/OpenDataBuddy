@@ -1,46 +1,74 @@
-# 交接记录 · 2026-11-10
+# 交接记录 · 2026-11-12
 
 ## 本轮目标
 
-将整个后端迁移到最新稳定版 GoFrame，Python 仅保留 Notebook / 工作流 Python 节点执行；接续上轮遗留的真实浏览器验收和可重复端到端测试。
+1. 按腾讯云官方《DataBuddy 产品动态》2026-08 版逐条对照本仓库，把「文档声称已具备、代码实际未生效」的地方改成真实实现，并按差距清单补齐功能。
+2. 按官方 Buddy 控制台截图重构前端：左侧任务栏、任务执行计划卡片、数据表芯片。
+
+差距逐条证据见 [docs/OSS_DIFF.md](docs/OSS_DIFF.md) §6；本轮完成情况见同文件 §6.8 / §6.9，剩余 8 项待办也列在 §6.9。
 
 ## 实现状态
 
-- GoFrame 固定为 v2.10.4，Go 1.24+，原生 SQLite / DuckDB 驱动。
-- 旧 Python HTTP 服务和业务模块已移除；`scripts/python_kernel.py` 是唯一 Python 运行时。
-- 原 220 条 API 路径、280 个 HTTP 操作均有原生 Go 路由；清单测试拒绝遗漏和重复。
-- 鉴权、空间权限、存储迁移、目录接入、工作流、发布、质量、漂移、特征、模型、分析、报告、血缘、本体、安全、Agent 和调度均在 Go 中执行。
-- MCP stdio 适配器通过 GoFrame HTTP 复用同一湖仓，避免独立进程争用 DuckDB。
-- 前端修复 CI/CD 重复 `/api` 前缀；补齐工作流 SVG 节点拖拽与坐标保存；更新 MCP 配置示例。
+### 修掉的缺陷（P0，6 / 6）
+
+- 外部目录探活与同步面板的前后端字段统一为 `checks` / `problems` / `issues` / `tables` / `suggestions` 与 `created` / `updated` / `target`，面板不再空白。
+- 看板生成（`/api/analysis/dashboard/generate`）不再固定追加「每日GMV趋势」「品类GMV」两张演示卡。
+- 补齐模型服务对外公布的 `POST /api/serving/services/{id}/predict`：模型版本在 `artifact_uri` 以 `sql:` 登记推理语句，`:名` 按实例绑定、`?` 按 `params` 顺序绑定，走只读护栏。
+- 数据源模板注释改为真实的 60 个。
+- Git 连接测试优先执行 `git ls-remote --heads` 取真实分支，未装 git 时退回 HTTP HEAD，并在响应里说明所用方法。
+- OBO 面板有数据了：`assessPrincipal()` 按工作空间 `obo_policy.<ws>` 白名单判定（默认 deny），`assessTool()` 输出三要素与 OBO，并接入工具循环。
+
+### 补齐的能力（P1，10 / 10）
+
+- 三场景 Agent 名副其实：`modeGroups` / `modeBriefs` / `toolsForMode()` / `agentSystem()` 让会话 `mode` 真正分流工具与提示词；`agents.tools` 白名单进入运行时筛选。
+- 工作流支持 `run_mode=once`（配 `run_at`，到期自动停用）与 `run_mode=event`（生成 `trigger_key`，公开端点 `POST /api/workflows/trigger/{key}`）。
+- 告警真实投递：新增 `internal/platform/notify.go`，webhook / Teams / 企微 / Slack / 飞书走 HTTP POST，邮件走 SMTP；`DATABUDDY_ALERT_SIMULATE=1` 保留离线模拟开关；失败记录状态而不是静默成功。报告推送（`runReport`）也走同一条投递路径，渠道名与目标不再是空值。
+- 敏感识别升级：`scan()` 用字段名规则 + 取值抽样（200 行）双重判定，输出 L1–L4 分级、命中比例与真实置信度。
+- 审计覆盖读操作：`server.go` `auditRead()` 覆盖 SQL 执行、目录预览、问数、归因、扫描、推理、知识检索。
+- 通知渠道补飞书：`metadata.json` `channel_types` 由 5 类增到 6 类。
+- 质量规则智能推荐：`quality.go` `suggestQualityRules()` 按剖析统计生成阈值与理由，不再是「所有字段 not_null」占位；`GET /api/quality/suggest` + 质量页「智能推荐」入口 + Agent 侧 `quality_suggestions` 产物。
+
+### 补齐的能力（P2，6 / 14）
+
+- 离线同步任务：`sync_tasks` 实体 + `runSyncTask()` 全量 / 水位增量执行器 + 调度接入 Tick + 前端「同步与出湖」页签。
+- AI 辅助建源建任务：`create_source` / `create_sync_task` 两个 Agent 工具（代码定义在 `sync.go` 的 `extraTools`，`Open()` 时注入元信息目录）。
+- 数据对账与出湖：`POST /api/ingest/reconcile`、`POST /api/ingest/egress`、`GET /api/ingest/egress`（`internal/platform/egress.go`）。
+- 看板卡片编辑与拖拽：卡片增删改、图表类型切换、指标引用或只读 SQL 数据源、HTML5 拖拽排序，落库走 `PATCH /api/dashboards/{id}`。
+
+### Buddy 任务台（对标官方截图）
+
+- 后端 `agent.go`：`planSteps` 按场景定义 5–6 步模板；`invoke()` 是工具执行的唯一入口，LLM 与规则兜底都经 `markPlanStep()` 推进步骤；`agentFinish()` 把计划写入 `meta.plan` 持久化进历史消息。
+- 前端 `web/js/buddy.js`：左栏「Hi, Buddy! / ＋新建任务 / 场景分段控件 / 自动化任务·Skills·知识库·更多 / 最近任务 / 自动化任务列表」，交互由 `bindRailNav()` 与 `openMoreMenu()` 承担；主区新增「任务执行中 N/M」计划卡片与「分析数据表」芯片区；样式在 `web/styles.css`。
 
 ## 可重复验证
 
 ```bash
-go test ./...
-ODB_HTTP_TEST=1 go test ./... -count=1
+go build ./...
 go vet ./...
-go build -o bin/opendatabuddy ./cmd/opendatabuddy
+go test ./... -count=1
+ODB_HTTP_TEST=1 go test ./... -count=1
+node --check web/js/<每个文件>.js
 ```
 
 测试均使用临时目录，HTTP 测试使用随机本地端口，不读写真实 `data/`。
 
-原生测试覆盖：示例数据、SQL 单语句/文件函数/空间权限、同名目录物理隔离、质量阻断、DAG 环检测、审批同运行恢复不重放、Python 跨 cell 与 `query()` 回调、发布幂等、增量补列、重启保留身份和数据、报告同分钟去重、MCP 身份与工具、字段血缘和 SVG 数据契约。
+## 本轮新增测试
 
-HTTP 测试覆盖：主要 GET 接口、登录/登出、问数、归因、报告、剖析与基线漂移、安全检查、工作流及节点明细、Notebook 运行、特征版本/物化/训练集、模型 A/B、CSV 上传、MCP HTTP / stdio 适配。模型工具循环使用本机模拟服务验证审批前后的工具各只执行一次及输出脱敏。
+| 测试 | 覆盖 |
+| --- | --- |
+| `TestSyncTaskLandsInLake` | 离线同步任务入湖、行数与水位 |
+| `TestPredictServesRegisteredModel` | `/predict` 真实推理端点与参数绑定 |
+| `TestScenarioToolsAndPrincipalCheck` | 场景工具分流、智能体白名单、OBO 默认拒绝与放行、工具三要素 |
+| `TestEventTriggerWorkflow` | 事件触发工作流的 trigger_key、公开路由与非法模式拒绝 |
+| `TestSuggestQualityRulesUseProfile` | 规则推荐基于剖析统计（枚举 / 唯一 / 抽样不产出精确阈值）、产物契约 |
+| `TestReportDeliveryUsesScheduledChannel` | 报告推送按定时配置的渠道真实投递并记录渠道与目标 |
+| `TestHTTPNewCapabilities`（HTTP） | 同步 → 出湖 → 对账 → 推理 → OBO → 事件触发公开端点全链路 |
 
 ## 浏览器与最终回归
 
-- 已在真实内置浏览器完成登录与 29 个页面加载复验；最终一轮无新增控制台错误或页面回退警告。未执行 Chrome / Safari 跨浏览器矩阵。
-- 发布管理：创建 Bundle、编辑并保存 YAML、校验、发布成功；再次发布显示创建 0 / 更新 0 / 未变 1。
-- 工作流：SVG 节点真实拖拽，刷新后坐标保留；运行 SQL 节点成功并显示运行明细。
-- Notebook：Python `query()` 调用原生 Go SQL 返回 5,200 条订单；第二个 cell 执行 `total + 1` 返回 5,201。修复原有编辑后跳过保存、执行旧代码的问题，并在运行全部前保存当前输入。
-- 数据质量四个标签可用；真实剖析返回 5,200 行统计、分位数及直方图。目录表级 / 字段级血缘均可切换。
-- 分析五个标签可用，问数、归因、四节报告与三张看板卡片均返回实际数据。修复客单价整体值错误累加分组均值的问题，并增加独立 SQL 对照测试。
-- 双版本模型服务：真实操作滑块后保存，输入 5 / 100 归一化为 5% / 95%，服务卡片显示多版本分流。
-- 修复计算资源类型、目录字段、本体概要、成员角色、工作空间计数、平台用量等前后端契约缺口；更新脚本版本标识以刷新旧浏览器缓存。
-- `ODB_HTTP_TEST=1 go test ./... -count=1`、`go test -race ./internal/platform`、`go vet ./...`、原生构建、24 个 JavaScript 文件语法检查及 `git diff --check` 均通过。
-
-浏览器验收使用 `/tmp/odb-native-browser-final` 独立数据目录，未修改项目原有 `data/`。可重复端到端检查入口为 `make test-http`，测试覆盖范围见上节；浏览器验收为人工驱动的真实 UI 检查。
+- 本轮未做新的浏览器人工验收；前端改动集中在 Buddy 任务台、质量页「智能推荐」入口与文案修正，逻辑均已被原生与 HTTP 测试覆盖。
+- 上一轮（2026-11-10）的浏览器验收结论仍然有效：登录与 29 个页面加载复验无新增控制台错误，发布管理、工作流拖拽、Notebook 跨 cell、质量四标签、分析五标签、模型 A/B 分流均通过。
+- 上传单文件上限实际为 128 MB（`ingest.go` 的 `128<<20`），前端提示与文档已同步修正（原写 200 MB）。
 
 ## 启动与数据
 
@@ -50,13 +78,20 @@ DATABUDDY_DATA_DIR=/tmp/odb-dev go run ./cmd/opendatabuddy --port 8042
 
 打开 `http://127.0.0.1:8042`，默认 `admin@local` / `admin123`。迁移现有数据前先停止旧服务；SQLite 增量补列，原数据目录布局保留。不要让两个服务进程同时打开同一 DuckDB 文件。
 
+出湖文件写在 `data/egress/<workspace_id>/`，按工作空间隔离。
+
 ## 实际边界
 
 - 真实大模型供应商未使用个人密钥验收；协议和工具恢复使用本地模拟模型验证。
-- 告警/报告渠道仍为本地模拟投递；模型服务没有真实推理后端。
-- SQLite 外部目录支持本地同步；其他数据源需导出后接入。
+- 告警与报告渠道是真实出网投递，失败只记录状态、不自动重投；SMTP 需自行配置服务器；离线演练请设 `DATABUDDY_ALERT_SIMULATE=1`。
+- `/predict` 的推理走登记的 SQL 推理语句，不是模型框架；没有鉴权、限流与预测质量监控。
+- 离线同步任务只支持 SQLite 源；外部目录中其他类型数据源需导出后接入。
+- 目标表仍是整表重建（`CREATE OR REPLACE`），不做增量列演进。
+- 60 个数据源模板中只有 SQLite 有真实取数路径，其余为 TCP 探活，响应中明示未验认证。
+- 权限模型仍是 admin / member 两角色，无行级 / 表级授权实体；检索仍为关键词 LIKE，无向量语义检索。
 - XLSX 读取首个工作表；复杂 SQL 血缘为规则推断，需人工核对。
 - Notebook 状态在内存，默认 30 秒执行超时，无内存隔离。
-- 编译需要 CGO 工具链。此次执行环境为 macOS arm64；其他平台尚未实机验收。
+- 本机未安装 Python 解释器，Python 内核相关测试自动跳过，Notebook 执行能力未在本机实机验证。
+- 编译需要 CGO 工具链；本次执行环境为 Windows x64，GCC 需使用与 DuckDB 静态库 ABI 匹配的 winlibs 版本。
 
 这些边界不应当被描述为已验证的商业级完整能力。

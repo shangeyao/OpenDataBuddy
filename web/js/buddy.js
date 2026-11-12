@@ -47,6 +47,7 @@ const state = {
   workdir: '工作空间根目录',
   refs: [],
   skills: [],
+  foldedPlans: new Set(),
   root: null,
   ctx: null,
 };
@@ -62,21 +63,26 @@ export async function renderBuddy(page, ctx) {
   page.innerHTML = `
     <div class="chat-layout" id="chat-layout">
       <aside class="chat-rail">
+        <div class="rail-greet">
+          <div class="rail-greet-name">Hi, Buddy!</div>
+          <button class="icon-btn" id="rail-fold" title="收起侧栏">${icon('chevron', 15)}</button>
+        </div>
         <div class="rail-section">
-          <div class="segmented" id="mode-switch"></div>
+          <button class="btn primary block sm rail-new" id="new-conv">＋ 新建任务</button>
         </div>
         <div class="rail-section" style="padding-top:0">
-          <button class="btn primary block sm" id="new-conv">＋ 新建会话</button>
+          <div class="segmented" id="mode-switch"></div>
         </div>
-        <div class="rail-label">历史会话<span class="dim">${''}</span></div>
+        <div class="rail-nav">
+          <button class="rail-item static" data-nav="tasks">${icon('ops', 14)}<span>自动化任务</span></button>
+          <button class="rail-item static" data-nav="skills">${icon('settings', 14)}<span>Skills</span></button>
+          <a class="rail-item" href="#/semantic">${icon('knowledge', 14)}<span>知识库</span></a>
+          <button class="rail-item static" data-nav="more">${icon('explore', 14)}<span>更多</span></button>
+        </div>
+        <div class="rail-label">最近任务</div>
         <div class="rail-list" id="conv-list" style="flex:1"></div>
-        <div class="rail-label">定时任务</div>
-        <div class="rail-list" id="task-list" style="flex:none;max-height:150px"></div>
-        <div class="rail-label">知识库</div>
-        <div class="rail-list" style="flex:none;padding-bottom:12px">
-          <a class="rail-item" href="#/semantic"><span class="ico">${icon('knowledge', 14)}</span><span>指标口径与术语</span></a>
-          <a class="rail-item" href="#/catalog"><span class="ico">${icon('catalog', 14)}</span><span>元数据目录</span></a>
-        </div>
+        <div class="rail-label" id="task-label" style="display:none">自动化任务</div>
+        <div class="rail-list" id="task-list" style="flex:none;max-height:170px;display:none"></div>
       </aside>
 
       <section class="chat-main">
@@ -116,6 +122,7 @@ export async function renderBuddy(page, ctx) {
 
   buildModeSwitch();
   bindComposer();
+  bindRailNav();
   await Promise.all([loadSettings(), loadConversations(), loadTasks(), loadSpaces()]);
   updateCtxHint();
   renderMessages();
@@ -123,6 +130,51 @@ export async function renderBuddy(page, ctx) {
 
   const deep = (location.hash.split('/')[2] || '').trim();
   if (deep) await openConversation(deep);
+}
+
+/* ------------------------------------------------------------------ 左栏 */
+function bindRailNav() {
+  state.root.querySelectorAll('[data-nav]').forEach((n) =>
+    n.addEventListener('click', () => {
+      const kind = n.dataset.nav;
+      if (kind === 'tasks') {
+        const list = state.root.querySelector('#task-list');
+        const label = state.root.querySelector('#task-label');
+        const show = list.style.display === 'none';
+        list.style.display = show ? 'block' : 'none';
+        label.style.display = show ? 'flex' : 'none';
+        if (show) loadTasks();
+      } else if (kind === 'skills') {
+        openSkills();
+      } else if (kind === 'more') {
+        openMoreMenu();
+      }
+    })
+  );
+  state.root.querySelector('#rail-fold')?.addEventListener('click', () => {
+    const layout = state.root.querySelector('#chat-layout');
+    layout?.classList.toggle('rail-folded');
+  });
+}
+
+function openMoreMenu() {
+  const body = el('div');
+  body.innerHTML = `<div class="col" style="gap:4px">
+    ${[
+      ['#/catalog', '元数据目录', 'catalog'],
+      ['#/analysis', '分析空间', 'analysis'],
+      ['#/mlops', '模型与服务', 'registry'],
+      ['#/quality', '数据质量', 'quality'],
+      ['#/security', '安全与审计', 'security'],
+      ['#/ops', '运维监控', 'ops'],
+    ].map(([href, label, ico]) => `<a class="list-item" href="${href}" data-close>
+      <span style="color:var(--text-3)">${icon(ico, 15)}</span><div class="meta"><strong>${label}</strong></div></a>`).join('')}
+  </div>`;
+  modal({
+    title: '更多功能',
+    body,
+    actions: [{ label: '关闭' }],
+  });
 }
 
 /* ------------------------------------------------------------------ 左栏 */
@@ -155,9 +207,10 @@ async function loadConversations() {
   const host = state.root.querySelector('#conv-list');
   host.innerHTML = state.conversations.length
     ? state.conversations.map((c) => `<div class="rail-item ${c.id === state.convId ? 'active' : ''}" data-conv="${c.id}">
-        <span class="ico">${icon('buddy', 13)}</span><span>${esc(c.title || '新会话')}</span>
+        <span class="rail-status ${state.sending && c.id === state.convId ? 'run' : ''}"></span>
+        <span>${esc(c.title || '新任务')}</span>
         <span class="x" data-del-conv="${c.id}">✕</span></div>`).join('')
-    : `<div class="tiny dim" style="padding:6px 8px">还没有会话</div>`;
+    : `<div class="tiny dim" style="padding:6px 8px">还没有任务</div>`;
   host.querySelectorAll('[data-conv]').forEach((n) =>
     n.addEventListener('click', (e) => {
       if (e.target.dataset.delConv) return;
@@ -351,6 +404,17 @@ function renderMessages() {
   body.querySelectorAll('[data-artifact]').forEach((n) =>
     n.addEventListener('click', () => selectArtifact(Number(n.dataset.artifact)))
   );
+  body.querySelectorAll('[data-plan-toggle]').forEach((n) =>
+    n.addEventListener('click', () => {
+      const card = n.closest('[data-plan-card]');
+      const key = card?.dataset.planKey || '';
+      if (state.foldedPlans.has(key)) state.foldedPlans.delete(key);
+      else state.foldedPlans.add(key);
+      card?.classList.toggle('folded');
+      const fold = card?.querySelector('.plan-fold');
+      if (fold) fold.textContent = card?.classList.contains('folded') ? '⌄' : '⌃';
+    })
+  );
 }
 
 function messageHTML(m) {
@@ -358,6 +422,7 @@ function messageHTML(m) {
   const isUser = m.role === 'user';
   const artifacts = (meta.artifacts || []).map((a) => artifactHTML(a, { compact: true, index: state.artifacts.indexOf(a) })).join('');
   const note = meta.note ? `<div class="tiny mt-8" style="color:var(--warning)">${esc(meta.note)}</div>` : '';
+  const plan = meta.plan || [];
   if (isUser) {
     return `<div class="msg user">
       <span class="avatar">${esc((session.user?.name || 'U').slice(0, 1))}</span>
@@ -368,11 +433,75 @@ function messageHTML(m) {
     <span class="avatar">B</span>
     <div class="body">
       <div class="msg-head"><strong>Buddy</strong><span>${esc(fmt.ago(m.created_at))}</span>${engineBadge(meta)}</div>
+      ${planLead(plan)}
+      ${planHTML(plan)}
       <div class="prose">${md(m.content)}</div>
+      ${tablesHTML(meta)}
       ${traceHTML(meta.trace)}
       ${artifacts}
       ${note}
     </div>
+  </div>`;
+}
+
+/* ------------------------------------------------------------------ 任务计划 */
+function planLead(plan) {
+  if (!plan || !plan.length) return '';
+  return `<div class="plan-lead">分析了你的需求并为你规划任务<span class="dim"> ›</span></div>`;
+}
+
+function planHTML(plan) {
+  if (!plan || !plan.length) return '';
+  const total = plan.length;
+  const done = plan.filter((s) => s.status === 'done').length;
+  const running = plan.some((s) => s.status === 'running');
+  const failed = plan.some((s) => s.status === 'failed');
+  const title = running ? '任务执行中' : failed ? '任务执行失败' : done === total ? '任务已完成' : '任务已规划';
+  const collapsed = state.foldedPlans.has(planKey(plan)) ? ' folded' : '';
+  return `<div class="plan-card${collapsed}" data-plan-card data-plan-key="${esc(planKey(plan))}">
+    <div class="plan-head" data-plan-toggle>
+      <span class="plan-title">${icon('flows', 14)}<span>${title}</span></span>
+      <span class="plan-count">${done}/${total}</span>
+      <span class="plan-fold">${collapsed ? '⌄' : '⌃'}</span>
+    </div>
+    <div class="plan-steps">
+      ${plan
+        .map(
+          (s) => `<div class="plan-step ${esc(s.status || 'pending')}">
+        <span class="step-mark">${stepMark(s.status)}</span>
+        <span class="step-text">${esc(s.title || '')}</span>
+        ${s.tool ? `<span class="step-tool mono">${esc(s.tool)}</span>` : ''}
+      </div>`
+        )
+        .join('')}
+    </div>
+  </div>`;
+}
+
+function planKey(plan) {
+  return plan.map((s) => s.key || s.title).join('|');
+}
+
+function stepMark(status) {
+  if (status === 'done') return '<span class="mark ok">✓</span>';
+  if (status === 'failed') return '<span class="mark err">✕</span>';
+  if (status === 'running') return '<span class="mark run"></span>';
+  return '<span class="mark todo"></span>';
+}
+
+function tablesHTML(meta) {
+  const tables = [];
+  for (const a of meta.artifacts || []) {
+    if (a.type === 'table_list') for (const t of a.items || []) tables.push(t);
+    if (a.type === 'table_schema' && a.table) tables.push({ ref: a.table.ref || a.table, rows: a.table.row_count, description: a.table.description });
+  }
+  if (!tables.length) return '';
+  return `<div class="analysis-block">
+    <div class="ab-title">分析数据表</div>
+    <div class="ab-sub">拉取数据表进行结构分析</div>
+    <div class="chip-row">${tables
+      .map((t) => `<span class="chip" title="${esc(t.description || '')}"><span class="mono">${esc(t.ref || '')}</span>${t.rows ? `<span class="chip-num">${fmt.num(t.rows)} 行</span>` : ''}</span>`)
+      .join('')}</div>
   </div>`;
 }
 

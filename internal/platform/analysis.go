@@ -296,12 +296,64 @@ func (a *App) report(ws string, m M) M {
 	}
 	return M{"title": str(def(m, "topic", "经营分析")) + " · " + str(win["label"]), "topic": def(m, "topic", "经营分析"), "period": win, "metrics": picked, "sections": sections, "summary": fmt.Sprintf("已完成 %d 个指标的本期统计。", len(picked)), "generated_at": now()}
 }
+// reportChannel turns a schedule channel descriptor into a channel the
+// delivery path understands. A schedule stores either a configured channel id
+// or an inline {type, target} pair.
+func (a *App) reportChannel(ws string, v any) M {
+	if s, ok := v.(string); ok {
+		return a.row("SELECT * FROM alert_channels WHERE id=? AND workspace_id=?", s, ws)
+	}
+	d := obj(v)
+	kind := str(d["type"])
+	target := str(d["target"])
+	cfg := M{}
+	switch kind {
+	case "email":
+		cfg["to"] = target
+	case "webhook":
+		cfg["url"] = target
+	case "wecom":
+		if strings.HasPrefix(target, "http") {
+			cfg["webhook_url"] = target
+		} else {
+			cfg["key"] = target
+		}
+	default:
+		cfg["webhook_url"] = target
+	}
+	return M{"id": d["id"], "name": firstNonempty(str(d["name"]), kind), "type": kind, "config": cfg, "target": target}
+}
+
 func (a *App) runReport(ws string, r M, trigger string) M {
 	out := a.report(ws, M{"topic": def(r, "topic", r["name"]), "metrics": arr(r["metrics"]), "period": r["period"]})
+	channels := arr(r["_channels"])
+	if len(channels) == 0 {
+		// A manual run has no channel list of its own, so the schedules of the
+		// report provide the push targets.
+		for _, s := range a.rows("SELECT channels FROM report_schedules WHERE workspace_id=? AND report_id=? AND enabled=1", ws, str(r["id"])) {
+			channels = append(channels, arr(decoded(s)["channels"])...)
+		}
+	}
 	deliveries := []M{}
-	for _, v := range arr(r["_channels"]) {
-		channel := obj(v)
-		deliveries = append(deliveries, M{"channel": firstNonempty(str(channel["name"]), str(channel["type"])), "ok": true, "simulated": true, "detail": "本地模拟投递", "target": channel["target"]})
+	for _, v := range channels {
+		channel := a.reportChannel(ws, v)
+		if channel == nil {
+			deliveries = append(deliveries, M{"channel": str(v), "ok": false, "simulated": false, "detail": "渠道不存在", "target": nil})
+			continue
+		}
+		result := a.deliverAlert(channel, M{"event": "report", "subject": str(out["title"]), "severity": "info", "message": str(out["summary"])})
+		target := str(channel["target"])
+		if target == "" {
+			cfg := obj(channel["config"])
+			target = firstNonempty(str(cfg["url"]), firstNonempty(str(cfg["webhook_url"]), firstNonempty(str(cfg["to"]), str(cfg["key"]))))
+		}
+		deliveries = append(deliveries, M{
+			"channel":   firstNonempty(str(channel["name"]), str(channel["type"])),
+			"ok":        boolOf(result["ok"]),
+			"simulated": boolOf(result["simulated"]),
+			"detail":    str(result["message"]),
+			"target":    target,
+		})
 	}
 	run := M{"id": id(), "workspace_id": ws, "report_id": r["id"], "status": "success", "trigger": trigger, "title": out["title"], "summary": out["summary"], "sections": out["sections"], "snapshot": out, "channels": deliveries, "started_at": now(), "finished_at": now()}
 	a.insert("report_runs", run)
@@ -344,13 +396,12 @@ func (a *App) analysisRoutes() []route {
 		{"POST", "/api/analysis/report/generate", false, false, func(c *request) any { return a.report(c.WS, c.Body) }},
 		{"POST", "/api/analysis/dashboard/generate", false, false, func(c *request) any {
 			question := c.s("prompt")
-			cards := []M{}
-			for _, q := range []string{question, "每日GMV趋势", "品类GMV"} {
-				out := a.ask(c.WS, q, c.s("period"))
-				out["title"] = q
-				cards = append(cards, out)
+			if question == "" {
+				fail(422, "请输入要生成的看板描述")
 			}
-			return M{"name": question, "description": "由语义层生成", "cards": cards, "metrics": []M{}, "dimensions": []M{}, "window": periodWindow(c.s("period"))["label"], "reasoning": "按指标口径生成查询与可视化卡片"}
+			out := a.ask(c.WS, question, c.s("period"))
+			out["title"] = question
+			return M{"name": question, "description": "由语义层生成", "cards": []M{out}, "metrics": []M{}, "dimensions": []M{}, "window": periodWindow(c.s("period"))["label"], "reasoning": "按指标口径生成查询与可视化卡片"}
 		}},
 		{"POST", "/api/reports/{report_id}/run", false, false, func(c *request) any {
 			return M{"run": a.runReport(c.WS, a.owned("reports", c.p("report_id"), c.WS), "manual")}

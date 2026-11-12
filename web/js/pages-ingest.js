@@ -1,11 +1,11 @@
-// 智能接入 2.0：数据源模板画廊（8 大分类 · 40+ 模板）+ 5 方案对比 + Agent 诊断
+// 智能接入 2.0：数据源模板画廊（8 大分类 · 60 个模板）+ 5 方案对比 + Agent 诊断
 //
 // 交互主线：选模板 → 按 fields 定义动态生成配置表单 → 保存 → 一键诊断 → 按修复建议改进。
 // 全部复用 ui.js 的既有组件，不引入任何前端框架或构建步骤。
 import { api, fmt } from './api.js';
 import {
   card, dataTable, statusTag, tag, loading, emptyState,
-  toast, drawer, esc, el, modal,
+  toast, drawer, esc, el, modal, formModal,
 } from './ui.js';
 import { icon } from './icons.js';
 
@@ -66,16 +66,19 @@ export async function renderIngest2(page, ctx) {
       <button class="active" data-tab="gallery">模板画廊</button>
       <button data-tab="plans">接入方案</button>
       <button data-tab="diagnose">Agent 诊断</button>
+      <button data-tab="sync">同步与出湖</button>
     </div>
 
     <div id="tab-gallery"></div>
     <div id="tab-plans" class="hidden"></div>
-    <div id="tab-diagnose" class="hidden"></div>`;
+    <div id="tab-diagnose" class="hidden"></div>
+    <div id="tab-sync" class="hidden"></div>`;
 
   const panes = {
     gallery: page.querySelector('#tab-gallery'),
     plans: page.querySelector('#tab-plans'),
     diagnose: page.querySelector('#tab-diagnose'),
+    sync: page.querySelector('#tab-sync'),
   };
   state.diagnosePane = panes.diagnose;
   const buttons = page.querySelectorAll('[data-tabs="ingest"] button');
@@ -88,6 +91,7 @@ export async function renderIngest2(page, ctx) {
     if (key === 'gallery') renderGallery(panes.gallery, ctx);
     if (key === 'plans' && !plansLoaded) { plansLoaded = true; renderPlans(panes.plans, ctx); }
     if (key === 'diagnose' && !diagnoseLoaded) { diagnoseLoaded = true; renderDiagnosePane(panes.diagnose, ctx); }
+    if (key === 'sync') renderSyncPane(panes.sync, ctx);
   };
   state.activateTab = activate;
   buttons.forEach((b) => b.addEventListener('click', () => activate(b.dataset.tab)));
@@ -650,4 +654,173 @@ function diagnoseResultHTML(d) {
         </div>`
       : ''}
   </div>`;
+}
+
+/* ============================================================ 同步与出湖 */
+async function renderSyncPane(host, ctx) {
+  host.innerHTML = loading('加载同步任务…');
+  const [tasks, egress, catalogs, tables] = await Promise.all([
+    api.get('/sync/tasks').catch(() => ({ tasks: [] })),
+    api.get('/ingest/egress').catch(() => ({ files: [] })),
+    api.get('/external-catalogs').catch(() => ({ external_catalogs: [] })),
+    api.get('/catalog/tables').catch(() => ({ tables: [] })),
+  ]);
+  const taskList = tasks.tasks || [];
+  const files = egress.files || [];
+  const sources = (catalogs.external_catalogs || []).filter((c) => c.type === 'sqlite');
+  const tableList = tables.tables || [];
+
+  host.innerHTML = `
+    <div class="grid-2" style="align-items:start">
+      <div class="col" style="gap:16px">
+        ${card('同步任务', taskList.length ? dataTable({
+          rows: taskList,
+          rowKey: 'id',
+          columns: [
+            { title: '任务', render: (r) => `<div class="cell-main">${esc(r.name)}</div>
+              <div class="cell-sub">${esc(r.mode === 'incremental' ? '增量' : '全量')} · ${esc(r.cron || '仅手动')}</div>` },
+            { title: '状态', render: (r) => statusTag(r.last_status === 'success' ? 'ok' : r.last_status === 'failed' ? 'failed' : 'draft') },
+            { title: '最近运行', render: (r) => `<span class="dim tiny">${fmt.ago(r.last_run_at)}</span>` },
+            { title: '操作', key: 'ops', render: (r) => `
+              <a class="btn-link" data-run="${esc(r.id)}">运行</a>
+              <a class="btn-link" data-toggle="${esc(r.id)}">${r.enabled ? '停用' : '启用'}</a>
+              <a class="btn-link danger" data-drop="${esc(r.id)}">删除</a>` },
+          ],
+        }) : emptyState('还没有同步任务', '新建一个任务，把数据源按调度同步进湖仓'), { flush: true, sub: `共 ${taskList.length} 个任务` })}
+        <div class="row"><button class="btn primary sm" id="sync-new">＋ 新建同步任务</button></div>
+
+        ${card('出湖文件', files.length ? dataTable({
+          rows: files,
+          rowKey: 'path',
+          columns: [
+            { title: '文件', render: (r) => `<span class="mono tiny">${esc(r.name)}</span>` },
+            { title: '大小', render: (r) => `<span class="tiny">${esc(r.size || '')}</span>` },
+            { title: '导出时间', render: (r) => `<span class="dim tiny">${fmt.ago(r.modified_at)}</span>` },
+          ],
+        }) : emptyState('还没有出湖文件', '把工作空间表导出为 CSV / Parquet'), { flush: true, sub: `目录 ${esc(egress.directory || '')}` })}
+        <div class="row"><button class="btn sm" id="egress-export">导出数据表</button></div>
+      </div>
+
+      <div class="col" style="gap:16px">
+        ${card('数据对账', sources.length ? `
+          <div class="tiny dim" style="margin-bottom:10px">比对外部目录与湖仓的行数与内容，定位入湖差异。</div>
+          <div class="col" style="gap:8px">
+            ${sources.map((s) => `<div class="list-item" style="cursor:pointer" data-reconcile="${esc(s.id)}">
+              <span style="color:var(--text-3)">${icon('sources', 15)}</span>
+              <div class="meta"><strong>${esc(s.name)}</strong><span>${esc(s.type)}</span></div>
+              <span class="btn-link">对账</span>
+            </div>`).join('')}
+          </div>
+          <div id="reconcile-out" class="mt-12"></div>
+        ` : emptyState('还没有外部目录', '在「目录」页登记一个 SQLite 外部目录后可做对账'), { sub: '源端与湖仓逐表比对' })}
+      </div>
+    </div>`;
+
+  host.querySelector('#sync-new')?.addEventListener('click', async () => {
+    const sqliteSources = (state.sources || []).filter((s) => s.type === 'sqlite');
+    if (!sqliteSources.length) {
+      toast('请先注册一个 SQLite 数据源', 'err');
+      return;
+    }
+    const data = await formModal({
+      title: '新建同步任务',
+      fields: [
+        { name: 'name', label: '任务名称', required: true, placeholder: '每日订单入库' },
+        { name: 'source_id', label: '数据源', type: 'select', options: sqliteSources.map((s) => ({ value: s.id, label: s.name })) },
+        { name: 'target', label: '目标 Schema', placeholder: 'catalog.schema，留空则写入 synced.main' },
+        { name: 'cron', label: '调度表达式', placeholder: '0 2 * * *' },
+        { name: 'mode', label: '同步方式', type: 'select', options: [{ value: 'full', label: '全量' }, { value: 'incremental', label: '增量（需水位列）' }] },
+        { name: 'watermark_column', label: '水位列', placeholder: 'updated_at，增量时必填' },
+      ],
+      submitText: '创建',
+    });
+    if (!data) return;
+    try {
+      await api.post('/sync/tasks', { ...data, enabled: true });
+      toast('同步任务已创建', 'ok');
+      renderSyncPane(host, ctx);
+    } catch (err) {
+      toast(err.message, 'err');
+    }
+  });
+
+  host.querySelectorAll('[data-run]').forEach((b) =>
+    b.addEventListener('click', async () => {
+      b.textContent = '运行中…';
+      try {
+        const out = await api.post(`/sync/tasks/${b.dataset.run}/run`, {});
+        toast(`同步完成：${out.run?.total_rows ?? 0} 行`, 'ok');
+      } catch (err) {
+        toast(err.message, 'err');
+      }
+      renderSyncPane(host, ctx);
+    })
+  );
+  host.querySelectorAll('[data-toggle]').forEach((b) =>
+    b.addEventListener('click', async () => {
+      const t = taskList.find((x) => x.id === b.dataset.toggle);
+      try {
+        await api.patch(`/sync/tasks/${b.dataset.toggle}`, { enabled: !t.enabled });
+        renderSyncPane(host, ctx);
+      } catch (err) {
+        toast(err.message, 'err');
+      }
+    })
+  );
+  host.querySelectorAll('[data-drop]').forEach((b) =>
+    b.addEventListener('click', async () => {
+      try {
+        await api.del(`/sync/tasks/${b.dataset.drop}`);
+        toast('同步任务已删除', 'ok');
+        renderSyncPane(host, ctx);
+      } catch (err) {
+        toast(err.message, 'err');
+      }
+    })
+  );
+
+  host.querySelector('#egress-export')?.addEventListener('click', async () => {
+    if (!tableList.length) {
+      toast('当前空间还没有数据表', 'err');
+      return;
+    }
+    const data = await formModal({
+      title: '导出数据表',
+      fields: [
+        { name: 'table', label: '数据表', type: 'select', options: tableList.map((t) => ({ value: t.ref, label: t.ref })) },
+        { name: 'format', label: '格式', type: 'select', options: [{ value: 'csv', label: 'CSV' }, { value: 'parquet', label: 'Parquet' }] },
+      ],
+      submitText: '导出',
+    });
+    if (!data) return;
+    try {
+      const out = await api.post('/ingest/egress', data);
+      toast(`已导出 ${out.name}（${out.rows} 行）`, 'ok');
+      renderSyncPane(host, ctx);
+    } catch (err) {
+      toast(err.message, 'err');
+    }
+  });
+
+  host.querySelectorAll('[data-reconcile]').forEach((n) =>
+    n.addEventListener('click', async () => {
+      const out = host.querySelector('#reconcile-out');
+      out.innerHTML = loading('对账中…');
+      try {
+        const r = await api.post('/ingest/reconcile', { source: n.dataset.reconcile });
+        out.innerHTML = dataTable({
+          rows: r.results || [],
+          rowKey: 'table',
+          columns: [
+            { title: '表', render: (x) => `<span class="mono tiny">${esc(x.table)}</span>` },
+            { title: '源 / 目标', render: (x) => `<span class="tiny">${esc(String(x.source_rows))} / ${esc(String(x.target_rows))}</span>` },
+            { title: '一致率', render: (x) => `<span class="tiny">${Math.round((x.consistency || 0) * 100)}%</span>` },
+            { title: '结论', render: (x) => tag(x.status, x.status === '一致' ? 'green' : x.status === '不一致' ? 'red' : 'orange') },
+          ],
+        });
+      } catch (err) {
+        out.innerHTML = `<div class="tag red">${esc(err.message)}</div>`;
+      }
+    })
+  );
 }

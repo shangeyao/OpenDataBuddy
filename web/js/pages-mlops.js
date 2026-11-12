@@ -799,6 +799,10 @@ export async function renderServing2(page, ctx) {
   -H "Authorization: Bearer $TOKEN" \\
   -H "Content-Type: application/json" \\
   -d '{"instances": [{"customer_id": "C00001"}]}'</pre>
+              <div class="tiny dim" style="margin-top:6px">
+                模型版本需在 <span class="mono">artifact_uri</span> 中以 <span class="mono">sql:</span> 开头登记推理语句，
+                <span class="mono">:参数名</span> 按实例逐条替换，<span class="mono">?</span> 按 <span class="mono">params</span> 顺序绑定。
+              </div>
             </div>
           </div>`,
         });

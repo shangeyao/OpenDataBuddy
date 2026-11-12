@@ -1,9 +1,12 @@
 package platform
 
 import (
+	"context"
 	"fmt"
 	"math"
+	"math/rand"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -91,6 +94,164 @@ func (a *App) service(ws string, s M) M {
 	}
 	return s
 }
+
+// sqlLiteral renders a request value as a SQL literal so named parameters can
+// be bound without string-concatenating untrusted input into the statement.
+func sqlLiteral(v any) string {
+	switch x := v.(type) {
+	case nil:
+		return "NULL"
+	case bool:
+		if x {
+			return "TRUE"
+		}
+		return "FALSE"
+	case float64:
+		if x == math.Trunc(x) && math.Abs(x) < 1<<53 {
+			return strconv.FormatInt(int64(x), 10)
+		}
+		return strconv.FormatFloat(x, 'f', -1, 64)
+	case int:
+		return strconv.Itoa(x)
+	case int64:
+		return strconv.FormatInt(x, 10)
+	case string:
+		return "'" + strings.ReplaceAll(x, "'", "''") + "'"
+	default:
+		return "'" + strings.ReplaceAll(fmt.Sprint(x), "'", "''") + "'"
+	}
+}
+
+// predict serves a registered model version. The version declares its inference
+// logic in artifact_uri as "sql:<statement>": ":name" placeholders bind one
+// instance, "?" placeholders bind the positional params list. The statement runs
+// through the same read-only guard and workspace scoping as the SQL workbench,
+// so the endpoint returns real rows instead of a placeholder payload.
+func (a *App) predict(ws, serviceID string, body M) M {
+	s := a.owned("model_services", serviceID, ws)
+	if str(s["status"]) != "running" {
+		fail(409, "模型服务未启动，无法推理")
+	}
+	model := a.row("SELECT * FROM registered_models WHERE workspace_id=? AND (id=? OR name=?)", ws, s["model_ref"], s["model_ref"])
+	if model == nil {
+		fail(404, "服务引用的模型不存在："+str(s["model_ref"]))
+	}
+	traffic := obj(s["traffic"])
+	versions := []string{}
+	for v := range traffic {
+		versions = append(versions, v)
+	}
+	sort.Strings(versions)
+	version := str(def(body, "version", ""))
+	if version == "" {
+		switch {
+		case len(versions) == 1:
+			version = versions[0]
+		case len(versions) > 1:
+			roll := rand.Intn(100)
+			acc := 0
+			for _, v := range versions {
+				acc += int(num(traffic[v]))
+				if roll < acc {
+					version = v
+					break
+				}
+			}
+			if version == "" {
+				version = versions[len(versions)-1]
+			}
+		default:
+			version = str(s["version"])
+		}
+	}
+	v := a.row("SELECT * FROM model_versions WHERE model_id=? AND workspace_id=? AND version=?", model["id"], ws, version)
+	if v == nil {
+		fail(404, "模型版本不存在："+version)
+	}
+	artifact := strings.TrimSpace(str(v["artifact_uri"]))
+	if !strings.HasPrefix(artifact, "sql:") {
+		fail(422, "模型版本未登记可执行的推理逻辑，请在 artifact_uri 中以 sql: 开头写入推理语句")
+	}
+	template := strings.TrimSpace(strings.TrimPrefix(artifact, "sql:"))
+	if template == "" {
+		fail(422, "模型版本的推理语句为空")
+	}
+	start := time.Now()
+	out := M{"service_id": serviceID, "service": str(s["name"]), "model": str(model["name"]), "model_id": model["id"], "version": version, "traffic": traffic, "elapsed_ms": 0}
+	instances := arr(body["instances"])
+	if len(instances) > 0 {
+		results := []any{}
+		for _, item := range instances {
+			fields := obj(item)
+			stmt := template
+			for k, v := range fields {
+				stmt = strings.ReplaceAll(stmt, ":"+k, sqlLiteral(v))
+			}
+			rows, cols := a.runInference(ws, stmt, nil)
+			results = append(results, M{"instance": fields, "columns": cols, "rows": rows, "row_count": len(rows)})
+		}
+		out["instances"] = results
+		out["row_count"] = len(results)
+	} else {
+		args := []any{}
+		for _, p := range arr(body["params"]) {
+			args = append(args, sqlArg(p))
+		}
+		rows, cols := a.runInference(ws, template, args)
+		out["columns"] = cols
+		out["rows"] = rows
+		out["row_count"] = len(rows)
+	}
+	out["elapsed_ms"] = time.Since(start).Milliseconds()
+	return out
+}
+
+// sqlArg normalizes a JSON number into the integer or float DuckDB expects.
+func sqlArg(v any) any {
+	if x, ok := v.(float64); ok && x == math.Trunc(x) && math.Abs(x) < 1<<53 {
+		return int64(x)
+	}
+	return v
+}
+
+// runInference executes a read-only inference statement and returns rows.
+func (a *App) runInference(ws, stmt string, args []any) ([][]any, []string) {
+	stmt = a.qualify(ws, guard(stmt))
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	r, e := a.Lake.QueryContext(ctx, stmt, args...)
+	if e != nil {
+		fail(400, "推理执行失败："+e.Error())
+	}
+	defer r.Close()
+	cols, e := r.Columns()
+	must(e)
+	result := [][]any{}
+	for r.Next() {
+		if len(result) >= 1000 {
+			break
+		}
+		values := make([]any, len(cols))
+		pointers := make([]any, len(cols))
+		for i := range values {
+			pointers[i] = &values[i]
+		}
+		must(r.Scan(pointers...))
+		for i, val := range values {
+			switch x := val.(type) {
+			case []byte:
+				values[i] = string(x)
+			case time.Time:
+				values[i] = x.Format(time.RFC3339)
+			case fmt.Stringer:
+				values[i] = x.String()
+			}
+		}
+		result = append(result, values)
+	}
+	must(r.Err())
+	return result, cols
+}
 func (a *App) mlopsRoutes() []route {
 	r := []route{
 		{"GET", "/api/registry/models", false, false, func(c *request) any {
@@ -171,6 +332,9 @@ func (a *App) mlopsRoutes() []route {
 		}},
 		{"GET", "/api/serving/services/{service_id}", false, false, func(c *request) any {
 			return M{"service": a.service(c.WS, a.owned("model_services", c.p("service_id"), c.WS))}
+		}},
+		{"POST", "/api/serving/services/{service_id}/predict", false, false, func(c *request) any {
+			return a.predict(c.WS, c.p("service_id"), c.Body)
 		}},
 		{"POST", "/api/serving/services/{service_id}/traffic", false, false, func(c *request) any {
 			s := a.owned("model_services", c.p("service_id"), c.WS)

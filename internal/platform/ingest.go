@@ -2,6 +2,7 @@ package platform
 
 import (
 	"archive/zip"
+	"database/sql"
 	"encoding/csv"
 	"encoding/xml"
 	"io"
@@ -167,34 +168,103 @@ func (a *App) volumeFiles(v M) []M {
 	})
 	return files
 }
+// probe checks whether a configured data source is reachable. SQLite catalogs are
+// opened read-only and their real tables are reported; other types fall back to
+// a network reachability check and say plainly that credentials were not verified.
 func (a *App) probe(kind string, cfg M) M {
+	checks := []M{}
+	problems := []M{}
+	issues := []string{}
+	tables := []M{}
+	suggestions := []string{}
 	ok := false
 	message := ""
-	if kind == "file" || kind == "sqlite" {
+	check := func(name string, passed bool, msg string) {
+		checks = append(checks, M{"name": name, "ok": passed, "message": msg})
+	}
+	problem := func(level, msg, fix, field string) {
+		problems = append(problems, M{"level": level, "message": msg, "fix": fix, "field": field})
+		issues = append(issues, msg)
+	}
+	switch kind {
+	case "file":
 		path := str(def(cfg, "path", cfg["database"]))
-		_, e := os.Stat(path)
-		ok = e == nil
-		if e != nil {
-			message = e.Error()
-		} else {
-			message = "本地路径可访问"
+		if path == "" {
+			problem("error", "未配置本地路径", "填写文件或目录的绝对路径", "path")
+			message = "未配置本地路径"
+			break
 		}
-	} else {
+		info, e := os.Stat(path)
+		if e != nil {
+			problem("error", "本地路径不可访问："+e.Error(), "确认路径存在且当前用户有读权限", "path")
+			message = e.Error()
+			break
+		}
+		ok = true
+		if info.IsDir() {
+			message = "目录可访问"
+		} else {
+			message = "本地文件可访问"
+		}
+		check("路径可访问", true, message)
+	case "sqlite":
+		path := str(def(cfg, "path", cfg["database"]))
+		if path == "" {
+			problem("error", "未配置数据库文件路径", "填写 SQLite 文件的绝对路径", "path")
+			message = "未配置数据库文件路径"
+			break
+		}
+		if _, e := os.Stat(path); e != nil {
+			problem("error", "数据库文件不可访问："+e.Error(), "确认文件存在且当前用户有读权限", "path")
+			message = e.Error()
+			break
+		}
+		source, e := sql.Open("sqlite3", "file:"+path+"?mode=ro")
+		if e != nil {
+			problem("error", "数据库无法打开："+e.Error(), "确认文件为合法的 SQLite 数据库", "path")
+			message = e.Error()
+			break
+		}
+		defer source.Close()
+		if e = source.Ping(); e != nil {
+			problem("error", "数据库无法打开："+e.Error(), "确认文件为合法的 SQLite 数据库", "path")
+			message = e.Error()
+			break
+		}
+		check("数据库可读", true, "SQLite 连接成功")
+		ok = true
+		message = "SQLite 连接成功"
+		for _, t := range rows(source, "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name") {
+			name := str(t["name"])
+			cols := rows(source, "PRAGMA table_info("+quote(name)+")")
+			count := rows(source, "SELECT count(*) AS n FROM (SELECT 1 FROM "+quote(name)+" LIMIT 100001)")[0]["n"]
+			tables = append(tables, M{"name": name, "columns": cols, "row_count": count, "simulated": false})
+		}
+		suggestions = append(suggestions, "SQLite 目录可执行元数据同步")
+	default:
 		host := str(cfg["host"])
+		if host == "" {
+			problem("error", "未配置主机地址", "填写数据库主机名或 IP", "host")
+			message = "未配置主机地址"
+			break
+		}
 		port := str(def(cfg, "port", 5432))
 		if kind == "mysql" {
 			port = str(def(cfg, "port", 3306))
 		}
 		conn, e := net.DialTimeout("tcp", net.JoinHostPort(host, port), 3*time.Second)
-		if e == nil {
-			conn.Close()
-			ok = true
-			message = "TCP 连接成功（未验证数据库认证）"
-		} else {
+		if e != nil {
+			problem("error", "网络不可达："+e.Error(), "确认主机、端口与防火墙策略", "host")
 			message = e.Error()
+			break
 		}
+		conn.Close()
+		check("网络可达", true, "TCP 连接成功")
+		ok = true
+		message = "TCP 连接成功（未验证数据库认证）"
+		problem("warning", "当前类型仅验证网络可达，未验证账号认证", "接入真实连接器后可在数据接入中直接取数", "type")
 	}
-	return M{"ok": ok, "message": message, "score": map[bool]int{true: 100, false: 0}[ok], "checks": []M{{"name": "连通性", "ok": ok, "message": message}}, "problems": []M{}, "suggestions": []string{}}
+	return M{"ok": ok, "message": message, "score": map[bool]int{true: 100, false: 0}[ok], "checks": checks, "problems": problems, "issues": issues, "tables": tables, "suggestions": suggestions}
 }
 func (a *App) ingestRoutes() []route {
 	return []route{

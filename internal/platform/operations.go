@@ -28,15 +28,26 @@ func (a *App) emit(ws string, m M) M {
 				continue
 			}
 			hash := fmt.Sprintf("%x", sha256.Sum256([]byte(event+":"+subject+":"+str(r["id"]))))
-			status := "sent"
+			severity := def(m, "severity", r["severity"])
 			if !boolOf(m["force"]) && a.row("SELECT id FROM alert_deliveries WHERE workspace_id=? AND channel_id=? AND dedup_key=? AND created_at>? AND status='sent' LIMIT 1", ws, key, hash, time.Now().UTC().Add(-5*time.Minute).Format(time.RFC3339)) != nil {
-				status = "suppressed"
+				deliveries = append(deliveries, a.insert("alert_deliveries", M{"id": id(), "workspace_id": ws, "rule_id": r["id"], "rule_name": r["name"], "channel_id": key, "channel_name": channel["name"], "channel_type": channel["type"], "event": event, "subject": subject, "severity": severity, "dedup_key": hash, "status": "suppressed", "simulated": false, "payload": m, "created_at": now()}))
+				continue
 			}
-			d := a.insert("alert_deliveries", M{"id": id(), "workspace_id": ws, "rule_id": r["id"], "rule_name": r["name"], "channel_id": key, "channel_name": channel["name"], "channel_type": channel["type"], "event": event, "subject": subject, "severity": def(m, "severity", r["severity"]), "dedup_key": hash, "status": status, "simulated": true, "payload": m, "created_at": now()})
+			result := a.deliverAlert(channel, M{"event": event, "subject": subject, "severity": severity, "message": str(def(m, "message", subject))})
+			status := "sent"
+			if !boolOf(result["ok"]) {
+				status = "failed"
+			}
+			d := a.insert("alert_deliveries", M{"id": id(), "workspace_id": ws, "rule_id": r["id"], "rule_name": r["name"], "channel_id": key, "channel_name": channel["name"], "channel_type": channel["type"], "event": event, "subject": subject, "severity": severity, "dedup_key": hash, "status": status, "simulated": boolOf(result["simulated"]), "payload": m, "delivery": result, "created_at": now()})
 			deliveries = append(deliveries, d)
 		}
 	}
-	return M{"event": event, "deliveries": deliveries, "total": len(deliveries), "simulated": true}
+	if len(deliveries) == 0 {
+		for _, r := range a.deliverWorkspaceNotify(ws, M{"event": event, "subject": subject, "severity": str(def(m, "severity", "info")), "message": str(def(m, "message", subject))}) {
+			deliveries = append(deliveries, r)
+		}
+	}
+	return M{"event": event, "deliveries": deliveries, "total": len(deliveries), "simulated": alertSimulated()}
 }
 func (a *App) buddyTask(ws string, t M) M {
 	u := a.row("SELECT * FROM users WHERE id=?", t["user_id"])
@@ -71,9 +82,14 @@ func (a *App) operationRoutes() []route {
 		{"POST", "/api/alerts/emit", false, false, func(c *request) any { return a.emit(c.WS, c.Body) }},
 		{"POST", "/api/alerts/channels/{channel_id}/test", false, false, func(c *request) any {
 			channel := a.owned("alert_channels", c.p("channel_id"), c.WS)
-			a.update("alert_channels", str(channel["id"]), M{"status": "ok", "last_test_at": now()})
-			r := a.insert("alert_deliveries", M{"id": id(), "workspace_id": c.WS, "channel_id": channel["id"], "channel_type": channel["type"], "channel_name": channel["name"], "event": "test", "subject": "渠道测试", "status": "sent", "simulated": true, "payload": M{"message": "模拟投递"}, "created_at": now()})
-			return M{"ok": true, "simulated": true, "delivery": r, "message": "模拟投递成功"}
+			result := a.deliverAlert(channel, M{"event": "test", "subject": "渠道测试", "severity": "info", "message": "这是一条来自 OpenDataBuddy 的渠道连通性测试。"})
+			status := "sent"
+			if !boolOf(result["ok"]) {
+				status = "failed"
+			}
+			a.update("alert_channels", str(channel["id"]), M{"status": map[bool]string{true: "ok", false: "error"}[boolOf(result["ok"])], "last_test_at": now()})
+			r := a.insert("alert_deliveries", M{"id": id(), "workspace_id": c.WS, "channel_id": channel["id"], "channel_type": channel["type"], "channel_name": channel["name"], "event": "test", "subject": "渠道测试", "status": status, "simulated": boolOf(result["simulated"]), "payload": M{"message": "渠道连通性测试"}, "delivery": result, "created_at": now()})
+			return M{"ok": boolOf(result["ok"]), "simulated": boolOf(result["simulated"]), "delivery": r, "message": str(result["message"])}
 		}},
 		{"GET", "/api/settings/integrations", false, false, func(c *request) any {
 			notify := obj(a.setting("notify." + c.WS))
@@ -82,7 +98,42 @@ func (a *App) operationRoutes() []route {
 		}},
 		{"PUT", "/api/settings/notify", false, false, func(c *request) any { a.setSetting("notify."+c.WS, js(c.Body)); return M{"ok": true, "notify": c.Body} }},
 		{"POST", "/api/settings/notify/test", false, false, func(c *request) any {
-			return M{"ok": true, "simulated": true, "message": "通知配置已接收；告警投递默认使用本地模拟渠道"}
+			notify := obj(c.Body)
+			if len(notify) == 0 {
+				notify = obj(a.setting("notify." + c.WS))
+			}
+			payload := M{"event": "test", "subject": "通知配置测试", "severity": "info", "message": "这是一条来自 OpenDataBuddy 的通知配置测试。"}
+			results := []any{}
+			ok := true
+			message := ""
+			for _, item := range []struct{ kind, key string }{{"webhook", "webhook"}, {"wecom", "wecom"}, {"email", "email"}} {
+				value := str(notify[item.key])
+				if value == "" {
+					continue
+				}
+				cfg := M{}
+				switch item.kind {
+				case "webhook":
+					cfg["url"] = value
+				case "wecom":
+					cfg["webhook_url"] = value
+				case "email":
+					cfg["to"] = value
+				}
+				result := a.deliverAlert(M{"type": item.kind, "name": "通知配置"}, payload)
+				results = append(results, result)
+				if !boolOf(result["ok"]) {
+					ok = false
+					message = str(result["message"])
+				}
+			}
+			if len(results) == 0 {
+				return M{"ok": false, "message": "请先填写企业微信、Webhook 或邮件地址", "results": results}
+			}
+			if ok {
+				message = "测试消息已发送"
+			}
+			return M{"ok": ok, "message": message, "results": results, "simulated": alertSimulated()}
 		}},
 		{"PUT", "/api/settings/git", false, false, func(c *request) any { a.setSetting("git."+c.WS, js(c.Body)); return M{"ok": true, "git": c.Body} }},
 		{"POST", "/api/settings/git/test", false, false, func(c *request) any {
@@ -91,23 +142,23 @@ func (a *App) operationRoutes() []route {
 			if e != nil || parsed.Scheme != "https" && parsed.Scheme != "http" {
 				fail(422, "仓库地址必须为 HTTP 或 HTTPS URL")
 			}
-			ctx, cancel := context.WithTimeout(c.R.Context(), 10*time.Second)
-			defer cancel()
-			req, e := http.NewRequestWithContext(ctx, "HEAD", raw, nil)
-			must(e)
-			client := &http.Client{CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				if len(via) > 3 {
-					return fmt.Errorf("重定向过多")
+			if refs, reason := gitRemoteRefs(raw, str(c.Body["branch"])); reason == "" {
+				return M{"ok": true, "method": "git ls-remote", "message": "仓库可访问", "refs": refs, "ref_count": len(refs)}
+			} else {
+				ctx, cancel := context.WithTimeout(c.R.Context(), 10*time.Second)
+				defer cancel()
+				req, e2 := http.NewRequestWithContext(ctx, "HEAD", raw, nil)
+				if e2 != nil {
+					fail(400, "仓库无法访问："+reason)
 				}
-				return nil
-			}}
-			resp, e := client.Do(req)
-			if e != nil {
-				return M{"ok": false, "message": "仓库无法访问"}
+				resp, e3 := http.DefaultClient.Do(req)
+				if e3 != nil {
+					fail(400, "仓库无法访问："+reason)
+				}
+				defer resp.Body.Close()
+				io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+				return M{"ok": resp.StatusCode < 400, "method": "http head", "status": resp.StatusCode, "message": fmt.Sprintf("HTTP %d（git 探测不可用：%s）", resp.StatusCode, reason)}
 			}
-			io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
-			resp.Body.Close()
-			return M{"ok": resp.StatusCode < 400, "message": fmt.Sprintf("HTTP %d", resp.StatusCode)}
 		}},
 		{"POST", "/api/buddy-tasks/{task_id}/run", false, false, func(c *request) any {
 			t := a.owned("buddy_tasks", c.p("task_id"), c.WS)
@@ -133,7 +184,7 @@ func (a *App) operationRoutes() []route {
 			}
 			defer source.Close()
 			tt := rows(source, "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
-			name := validName(str(r["name"]))
+			name := lakeName(str(r["name"]))
 			cat := a.row("SELECT * FROM catalogs WHERE workspace_id=? AND name=?", c.WS, name)
 			if cat == nil {
 				cat = a.insert("catalogs", M{"id": id(), "workspace_id": c.WS, "name": name, "physical_prefix": "odb_" + c.WS + "_" + name, "created_at": now()})
@@ -147,8 +198,11 @@ func (a *App) operationRoutes() []route {
 			_, e = a.Lake.Exec("CREATE SCHEMA IF NOT EXISTS " + quote(lakeNamespace(str(cat["physical_prefix"]), name, "main")))
 			must(e)
 			imported := []M{}
+			created := 0
+			updated := 0
 			for _, t := range tt {
 				tableName := validName(str(t["name"]))
+				existed := a.row("SELECT id FROM tables WHERE schema_id=? AND name=?", sch["id"], tableName) != nil
 				data := rows(source, "SELECT * FROM "+quote(tableName)+" LIMIT 100000")
 				cols := rows(source, "PRAGMA table_info("+quote(tableName)+")")
 				defs := []string{}
@@ -187,9 +241,14 @@ func (a *App) operationRoutes() []route {
 				stmt.Close()
 				must(tx.Commit())
 				imported = append(imported, a.registerTable(c.WS, sch, tableName, "外部 SQLite 同步"))
+				if existed {
+					updated++
+				} else {
+					created++
+				}
 			}
 			a.update("external_catalogs", str(r["id"]), M{"status": "ok", "last_sync_at": now()})
-			return M{"ok": true, "tables": imported, "count": len(imported)}
+			return M{"ok": true, "tables": imported, "count": len(imported), "created": created, "updated": updated, "target": str(cat["name"]) + "." + str(sch["name"])}
 		}},
 	}
 }
@@ -255,7 +314,7 @@ func cronMatches(expr string, t time.Time) bool {
 	return minute && hour && day && month
 }
 func (a *App) Tick(at time.Time) {
-	for _, table := range []string{"flows", "report_schedules", "buddy_tasks"} {
+	for _, table := range []string{"flows", "report_schedules", "buddy_tasks", "sync_tasks"} {
 		for _, r := range a.rows("SELECT * FROM " + quote(table) + " WHERE enabled=1") {
 			func() {
 				defer func() {
@@ -288,6 +347,10 @@ func (a *App) Tick(at time.Time) {
 				due := false
 				if mode == "continuous" {
 					due = e != nil || at.Sub(previous) >= time.Duration(mathMax(60, num(r["interval_seconds"])))*time.Second
+				} else if mode == "once" {
+					if moment, e2 := parseRunAt(str(r["run_at"]), str(r["timezone"])); e2 == nil && !moment.After(local) {
+						due = true
+					}
 				} else if str(r["cron"]) != "" {
 					due = cronMatches(str(r["cron"]), local)
 				}
@@ -298,6 +361,9 @@ func (a *App) Tick(at time.Time) {
 				switch table {
 				case "flows":
 					a.runFlow(ws, r, M{}, "schedule", 0)
+					if mode == "once" {
+						a.update("flows", str(r["id"]), M{"enabled": false, "last_run_at": at.UTC().Format(time.RFC3339), "updated_at": at.UTC().Format(time.RFC3339)})
+					}
 				case "report_schedules":
 					report := a.owned("reports", str(r["report_id"]), ws)
 					report["_channels"] = arr(r["channels"])
@@ -305,6 +371,8 @@ func (a *App) Tick(at time.Time) {
 					a.update(table, str(r["id"]), M{"last_run_at": at.UTC().Format(time.RFC3339), "last_status": "success"})
 				case "buddy_tasks":
 					a.buddyTask(ws, r)
+				case "sync_tasks":
+					a.runSyncTask(ws, r)
 				}
 			}()
 		}

@@ -2,9 +2,11 @@ package platform
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"math"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -128,6 +130,9 @@ func TestQualityAndDAG(t *testing.T) {
 	}
 }
 func TestNativePythonKernel(t *testing.T) {
+	if !pythonAvailable() {
+		t.Skip("未安装可用的 Python 解释器，跳过内核测试")
+	}
 	a := testApp(t)
 	ws := str(a.row("SELECT id FROM workspaces LIMIT 1")["id"])
 	key := ws + ":" + id()
@@ -333,5 +338,201 @@ func TestLineageColumnsAndGraphContract(t *testing.T) {
 	columns := a.lineageView(ws, "demo.retail.fact_orders", "both", "column", 3)
 	if num(obj(columns["counts"])["edges"]) != 2 {
 		t.Fatal(columns)
+	}
+}
+
+func TestSyncTaskLandsInLake(t *testing.T) {
+	a := testApp(t)
+	ws := str(a.row("SELECT id FROM workspaces LIMIT 1")["id"])
+	path := filepath.Join(t.TempDir(), "source.db")
+	db, e := sql.Open("sqlite3", path)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, e = db.Exec("CREATE TABLE sync_demo (id INTEGER, name TEXT, amount DOUBLE)"); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = db.Exec("INSERT INTO sync_demo VALUES (1,'a',10),(2,'b',20),(3,'c',30)"); e != nil {
+		t.Fatal(e)
+	}
+	db.Close()
+	src := a.insert("sources", M{"id": id(), "workspace_id": ws, "name": "本地源", "type": "sqlite", "config": M{"path": path}, "status": "ok", "created_at": now()})
+	task := a.newSyncTask(ws, M{"name": "测试同步", "source_id": str(src["id"]), "target": "demo.retail", "mode": "full", "enabled": true})
+	out := a.runSyncTask(ws, task)
+	if str(out["status"]) != "success" || num(out["total_rows"]) != 3 {
+		t.Fatal(out)
+	}
+	q := a.query(ws, "SELECT count(*) AS n, sum(amount) AS s FROM sync_demo", 10)
+	if num(q["rows"].([][]any)[0][0]) != 3 || num(q["rows"].([][]any)[0][1]) != 60 {
+		t.Fatal(q)
+	}
+	if a.row("SELECT id FROM tables WHERE name='sync_demo'") == nil {
+		t.Fatal("synced table not registered")
+	}
+	exported := a.exportTable(ws, M{"table": "demo.retail.sync_demo", "format": "csv"})
+	if !boolOf(exported["ok"]) {
+		t.Fatal(exported)
+	}
+	if _, e = os.Stat(str(exported["path"])); e != nil {
+		t.Fatal("export file missing", exported)
+	}
+}
+
+func TestPredictServesRegisteredModel(t *testing.T) {
+	a := testApp(t)
+	ws := str(a.row("SELECT id FROM workspaces LIMIT 1")["id"])
+	model := a.insert("registered_models", M{"id": id(), "workspace_id": ws, "name": "复购率模型", "description": "", "source_experiment": "", "framework": "SQL", "owner": "", "created_at": now()})
+	a.addVersion(ws, model, M{"artifact_uri": "sql:SELECT count(*) AS n FROM demo.retail.fact_orders", "stage": "production"})
+	service := a.insert("model_services", M{"id": id(), "workspace_id": ws, "name": "复购率服务", "model_ref": str(model["id"]), "version": "v1", "replicas": 1, "min_replicas": 1, "max_replicas": 4, "target_qps": 50, "traffic": M{"v1": 100}, "status": "running", "created_at": now()})
+	out := a.predict(ws, str(service["id"]), M{})
+	rows := out["rows"].([][]any)
+	if len(rows) != 1 || num(rows[0][0]) != 5200 {
+		t.Fatal(out)
+	}
+	inst := a.predict(ws, str(service["id"]), M{"instances": []any{M{"label": "x"}}})
+	if len(inst["instances"].([]any)) != 1 {
+		t.Fatal(inst)
+	}
+	catches(t, 422, func() {
+		plain := a.insert("registered_models", M{"id": id(), "workspace_id": ws, "name": "无推理逻辑模型", "description": "", "source_experiment": "", "framework": "sklearn", "owner": "", "created_at": now()})
+		a.addVersion(ws, plain, M{"artifact_uri": "s3://bucket/model.pkl", "stage": "production"})
+		bad := a.insert("model_services", M{"id": id(), "workspace_id": ws, "name": "无推理", "model_ref": str(plain["id"]), "version": "v1", "replicas": 1, "min_replicas": 1, "max_replicas": 4, "target_qps": 50, "traffic": M{"v1": 100}, "status": "running", "created_at": now()})
+		a.predict(ws, str(bad["id"]), M{})
+	})
+}
+
+func TestScenarioToolsAndPrincipalCheck(t *testing.T) {
+	a := testApp(t)
+	ws := str(a.row("SELECT id FROM workspaces LIMIT 1")["id"])
+	names := func(list []any) map[string]bool {
+		out := map[string]bool{}
+		for _, s := range list {
+			out[str(obj(obj(s)["function"])["name"])] = true
+		}
+		return out
+	}
+	analysis := names(a.toolsForMode("analysis", nil))
+	if analysis["create_flow"] || analysis["apply_tags"] || !analysis["query_metric"] {
+		t.Fatal("analysis tools leaked", analysis)
+	}
+	governance := names(a.toolsForMode("governance", nil))
+	if governance["create_flow"] || !governance["scan_sensitive"] {
+		t.Fatal("governance tools leaked", governance)
+	}
+	engineering := names(a.toolsForMode("engineering", nil))
+	if !engineering["create_flow"] || !engineering["create_source"] {
+		t.Fatal("engineering tools missing", engineering)
+	}
+	whitelist := names(a.toolsForMode("engineering", []any{"list_tables"}))
+	if len(whitelist) != 1 || !whitelist["list_tables"] {
+		t.Fatal("whitelist ignored", whitelist)
+	}
+	delegated := a.assessPrincipal(ws, "owner@local", "guest@local")
+	if !boolOf(delegated["delegated"]) || boolOf(obj(delegated["check"])["allowed"]) {
+		t.Fatal("delegation must be denied by default", delegated)
+	}
+	a.setSetting("obo_policy."+ws, js(M{"allowed": []any{"guest@local"}, "default": "deny"}))
+	allowed := a.assessPrincipal(ws, "owner@local", "guest@local")
+	if !boolOf(obj(allowed["check"])["allowed"]) {
+		t.Fatal("authorized delegation rejected", allowed)
+	}
+	assessment := a.assessTool(ws, "create_flow", M{"name": "x"}, M{"principal": "owner@local"})
+	if !boolOf(assessment["requires_approval"]) || len(arr(assessment["three_factors"])) != 3 {
+		t.Fatal(assessment)
+	}
+}
+
+func TestEventTriggerWorkflow(t *testing.T) {
+	a := testApp(t)
+	ws := str(a.row("SELECT id FROM workspaces LIMIT 1")["id"])
+	flow := a.newFlow(ws, M{"name": "事件触发流", "nodes": []any{M{"id": "a", "type": "sql", "config": M{"sql": "SELECT 1"}}}, "edges": []any{}, "run_mode": "event", "enabled": true})
+	if str(flow["trigger_key"]) == "" || str(flow["trigger_url"]) == "" {
+		t.Fatal("event flow needs a trigger key", flow)
+	}
+	found := false
+	for _, r := range a.workflowRoutes() {
+		if r.Path == "/api/workflows/trigger/{key}" && r.Public {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("event trigger route missing")
+	}
+	catches(t, 422, func() {
+		a.newFlow(ws, M{"name": "坏模式", "nodes": []any{}, "edges": []any{}, "run_mode": "whatever"})
+	})
+	catches(t, 422, func() {
+		a.newFlow(ws, M{"name": "缺时间", "nodes": []any{}, "edges": []any{}, "run_mode": "once"})
+	})
+}
+
+func TestReportDeliveryUsesScheduledChannel(t *testing.T) {
+	a := testApp(t)
+	ws := str(a.row("SELECT id FROM workspaces LIMIT 1")["id"])
+	t.Setenv("DATABUDDY_ALERT_SIMULATE", "1")
+	report := a.insert("reports", M{"id": id(), "workspace_id": ws, "name": "投递报告", "sections": []any{}, "status": "draft", "created_at": now()})
+	a.insert("report_schedules", M{"id": id(), "workspace_id": ws, "report_id": report["id"], "cron": "0 9 * * *", "channels": []any{M{"type": "webhook", "target": "https://example.invalid/hook"}}, "enabled": true, "created_at": now()})
+	run := a.runReport(ws, a.owned("reports", str(report["id"]), ws), "manual")
+	deliveries := arr(run["channels"])
+	if len(deliveries) != 1 {
+		t.Fatal("report must push to the scheduled channel", run)
+	}
+	d := obj(deliveries[0])
+	if str(d["channel"]) != "webhook" || str(d["target"]) != "https://example.invalid/hook" {
+		t.Fatal(d)
+	}
+	if !boolOf(d["ok"]) || !boolOf(d["simulated"]) {
+		t.Fatal(d)
+	}
+}
+
+func TestSuggestQualityRulesUseProfile(t *testing.T) {
+	a := testApp(t)
+	ws := str(a.row("SELECT id FROM workspaces LIMIT 1")["id"])
+	out := a.suggestQualityRules(ws, "demo.retail.dim_channel")
+	rules := arr(out["rules"])
+	if len(rules) == 0 {
+		t.Fatal("no quality rule suggested", out)
+	}
+	kinds := map[string]bool{}
+	for _, raw := range rules {
+		r := obj(raw)
+		kind := str(r["rule_type"])
+		kinds[kind] = true
+		if str(r["column_name"]) == "" || str(r["reason"]) == "" {
+			t.Fatal("suggestion must name a column and a reason", r)
+		}
+		if len(obj(r["config"])) == 0 {
+			t.Fatal("suggestion must carry a threshold", r)
+		}
+	}
+	if !kinds["enum"] {
+		t.Fatal("low cardinality column should yield an enum rule", rules)
+	}
+	if !kinds["unique"] {
+		t.Fatal("key column should yield a unique rule", rules)
+	}
+	// A categorical column of a small table must not be reported as unique.
+	for _, raw := range rules {
+		r := obj(raw)
+		if str(r["rule_type"]) == "unique" && str(r["column_name"]) == "channel_name" {
+			t.Fatal("noise suggestion on a small categorical column", r)
+		}
+	}
+	// The suggestion has to reach the frontend artifact contract.
+	art := artifact(out, "质量规则建议")
+	if str(art["type"]) != "quality_suggestions" || len(arr(art["items"])) != len(rules) {
+		t.Fatal(art)
+	}
+	// A large table is sampled, so exact thresholds are not offered.
+	big := a.suggestQualityRules(ws, "demo.retail.fact_orders")
+	if boolOf(big["complete"]) {
+		t.Fatal("a 5200 row table must be profiled as a sample", big)
+	}
+	for _, raw := range arr(big["rules"]) {
+		r := obj(raw)
+		if str(r["rule_type"]) == "enum" || str(r["rule_type"]) == "range" {
+			t.Fatal("sampled table must not produce an exact threshold", r)
+		}
 	}
 }

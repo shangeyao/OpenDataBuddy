@@ -139,6 +139,7 @@ CREATE TABLE IF NOT EXISTS conversations (
     user_id TEXT,
     mode TEXT DEFAULT 'engineering',              -- engineering / governance / analysis
     chat_mode TEXT DEFAULT 'agent',               -- agent / ask
+    agent_id TEXT DEFAULT '',                     -- 可选：绑定的自定义智能体
     title TEXT DEFAULT '新会话',
     model TEXT,
     created_at TEXT,
@@ -175,7 +176,7 @@ CREATE TABLE IF NOT EXISTS flows (
     retries INTEGER DEFAULT 0,
     created_at TEXT,
     updated_at TEXT
-, "params" TEXT DEFAULT '{}', "run_mode" TEXT DEFAULT 'cron', "interval_seconds" INTEGER DEFAULT 60, "timezone" TEXT DEFAULT '');
+, "params" TEXT DEFAULT '{}', "run_mode" TEXT DEFAULT 'cron', "interval_seconds" INTEGER DEFAULT 60, "timezone" TEXT DEFAULT '', "run_at" TEXT DEFAULT '', "trigger_key" TEXT DEFAULT '');
 CREATE TABLE IF NOT EXISTS flow_runs (
     id TEXT PRIMARY KEY,
     flow_id TEXT,
@@ -522,7 +523,7 @@ CREATE TABLE IF NOT EXISTS notebooks (
 CREATE TABLE IF NOT EXISTS alert_channels (
     id TEXT PRIMARY KEY,
     workspace_id TEXT,
-    type TEXT NOT NULL,                           -- email / webhook / teams / wecom / slack
+    type TEXT NOT NULL,                           -- email / webhook / teams / wecom / slack / feishu
     name TEXT DEFAULT '',
     config TEXT DEFAULT '{}',
     enabled INTEGER DEFAULT 1,
@@ -602,6 +603,23 @@ CREATE TABLE IF NOT EXISTS report_schedules (
     next_run_hint TEXT DEFAULT '',
     created_at TEXT,
     updated_at TEXT
+);
+CREATE TABLE IF NOT EXISTS sync_tasks (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT,
+    name TEXT NOT NULL,
+    source_id TEXT,
+    target TEXT DEFAULT '',                    -- catalog.schema
+    tables TEXT DEFAULT '[]',                 -- 待同步的源表名，空表示全部
+    mode TEXT DEFAULT 'full',                 -- full / incremental
+    watermark_column TEXT DEFAULT '',
+    watermark_value TEXT DEFAULT '',
+    cron TEXT DEFAULT '',
+    enabled INTEGER DEFAULT 0,
+    last_run_at TEXT DEFAULT '',
+    last_status TEXT DEFAULT '',
+    last_message TEXT DEFAULT '',
+    created_at TEXT
 );
 CREATE TABLE IF NOT EXISTS analysis_embeds (
     id TEXT PRIMARY KEY,

@@ -147,6 +147,7 @@ async function viewRules(host, ctx, tableList, meta, prefetched) {
       <span class="spacer"></span>
       <button class="btn sm" id="q-run-all">全部执行</button>
       <button class="btn sm" id="q-precheck">前置检查</button>
+      <button class="btn sm" id="q-suggest">智能推荐</button>
     </div>
     <div id="q-rule-table"></div>`;
 
@@ -202,6 +203,8 @@ async function viewRules(host, ctx, tableList, meta, prefetched) {
   });
 
   host.querySelector('#q-precheck').addEventListener('click', () => precheckForm(ctx, tableList));
+
+  host.querySelector('#q-suggest').addEventListener('click', () => suggestForm(ctx, tableList));
 
   host.querySelectorAll('[data-run]').forEach((b) =>
     b.addEventListener('click', async () => {
@@ -288,6 +291,69 @@ function ruleForm(ctx, tableList, meta) {
       });
       toast('规则已创建', 'ok');
       ctx.refresh();
+    },
+  });
+}
+
+function suggestForm(ctx, tableList) {
+  formModal({
+    title: '智能推荐质量规则',
+    intro: '按当前数据剖析结果推荐规则：只对有风险的字段生成，阈值取自实测值，并给出理由。',
+    fields: [
+      {
+        label: '目标表', name: 'table_ref', type: 'select', required: true,
+        options: [{ value: '', label: '请选择表' }, ...tableList.map((t) => ({ value: t.ref, label: t.ref }))],
+      },
+    ],
+    submitText: '生成推荐',
+    onSubmit: async (d) => {
+      let out;
+      try {
+        out = await api.get(`/quality/suggest?table=${encodeURIComponent(d.table_ref)}`);
+      } catch (err) {
+        toast(err.message, 'err');
+        return false;
+      }
+      const items = out.rules || [];
+      const rows = items.map((r) => [r.column_name, r.rule_type, JSON.stringify(r.config || {}), r.reason || '']);
+      const view = drawer({
+        title: `规则推荐 · ${out.table_ref || ''}`,
+        wide: true,
+        body: `
+          <div class="row" style="margin-bottom:14px;gap:12px">
+            <span class="dim tiny">${fmt.num(out.row_count)} 行 · ${out.complete ? '全量剖析' : '抽样剖析，值域与枚举类精确阈值不可用'}</span>
+            <span class="spacer"></span>
+            <span class="dim tiny">共 ${items.length} 条建议</span>
+          </div>
+          ${items.length
+            ? tableHTML(['字段', '规则', '阈值', '理由'], rows)
+            : emptyState('没有需要推荐的规则', '这张表的数据比较干净')}`,
+        footer: items.length ? '<button class="btn primary" id="q-suggest-create">全部创建</button>' : '',
+      });
+      const btn = view.panel.querySelector('#q-suggest-create');
+      if (btn) {
+        btn.addEventListener('click', async () => {
+          btn.disabled = true;
+          try {
+            let created = 0;
+            for (const r of items) {
+              await api.post('/quality/rules', {
+                table_ref: r.table_ref || out.table_ref,
+                column_name: r.column_name,
+                rule_type: r.rule_type,
+                config: r.config || {},
+              });
+              created += 1;
+            }
+            toast(`已创建 ${created} 条规则`, 'ok');
+            view.close();
+            ctx.refresh();
+          } catch (err) {
+            toast(err.message, 'err');
+            btn.disabled = false;
+          }
+        });
+      }
     },
   });
 }
