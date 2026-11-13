@@ -98,6 +98,46 @@ DATABUDDY_DATA_DIR=/tmp/odb-dev go run ./cmd/opendatabuddy --port 8042
 
 ---
 
+## 补充比对轮次 · 2026-11-13（官方《产品功能》页 + 同目录细则页）
+
+**目标**：不只对照「产品动态」，而是以官方[《产品功能》](https://cloud.tencent.com/document/product/1835/135579)页为入口，横向扫描同目录 40+ 个子页（其中[基础能力](https://cloud.tencent.com/document/product/1835/140860)、[场景功能对比](https://cloud.tencent.com/document/product/1835/140844)为 2026-11-13 更新，比 §6 的 2026-08 基线更新），逐条对本仓库代码复核，结果写入 [docs/OSS_DIFF.md](docs/OSS_DIFF.md) 新增的 **§6.11**。
+
+**方法**：官网正文抓成本地纯文本 → 按条目在 `internal/platform/*.go`、`web/js/*.js`、`assets/metadata.json`、`assets/schema.sql` 定位证据（文件:行号）→ 标注 对齐 / 部分 / 缺失 / 刻意不做。**未修改任何源码与本轮之前的功能实现**，本轮是纯文档复核轮。
+
+### 新增结论（20 小节，18 条缺口，2 处 §5 口径更正）
+
+最重要的三条：
+
+1. **工作流无 ForEach 循环节点**。官方 9 种任务类型含 IF-ELSE / ForEach；本仓库 `workflow.go:278–362` 也是 9 种，但集合不同（多 shell/http/notify/approval，缺 Ray/IF-ELSE/ForEach）。分支可用边条件近似，**循环完全无法表达** —— `grep 'for_each\|foreach\|if_else\|ray' internal/platform/*.go` 零命中。
+2. **系统内置参数完全缺失**。官方有 4 组 30+ 个自动变量（`{{workflow.run_id}}`、`{{workflow.start_time.iso_date}}`、`{{tasks.upstream_sql.output.first_row.col_a}}`、For Each 循环参数）。本仓库 `renderValue()`（`workflow.go:156–182`）的作用域只有用户自定义 params，`workflow.go:277` 的 `"workflow"` 键挂的是 `params` 而非系统变量；`grep 'start_time\|repair_count\|is_weekday\|timestamp_ms'` 零命中。
+3. **Ask 模式只做到"不给工具"**。官方语义是「拒绝执行并提示切换到 Agent 模式」+「产物仅支持只读类」。本仓库 `agent.go:426–428` 仅 `tools = nil`，无显式拒绝话术、无只读产物白名单。
+
+### 菜单级缺失（4 个模块完全没有）
+
+| 模块 | 官方页 | 证据 |
+| --- | --- | --- |
+| AI Gateway | 139401 | `grep -in 'gateway'` 在 go/js 全仓零命中 |
+| 推理监控与日志 | 137615 | `grep -in 'inference_log\|推理表\|service_event\|batch_predict'` 零命中 |
+| 数据复核 | 137281 | `grep 'review\|复核'` 只命中 Agent 工具确认 `approvals`，非结果复核 |
+| 探索发现（统一检索） | 140855 | 只有 `semanticSearch` 供知识检索，无跨类型统一入口 |
+
+### 两处 §5 口径更正
+
+- 「数据源模板 60 个 > 官方 47+」：数量成立，但官方 5 大接入方案按**机制**分（离线/实时/文件到表/文件到卷/文件批量到卷），本仓库 `ingest_plans` 5 类按**时效**分（直连/定时/实时/上传/Agent）。数量相等**不等于**能力对齐，CDC 与 Volume 同步任务仍缺。
+- 「工作流 9 种节点类型」：数量巧合，集合不同，能力不等价。
+
+### 与本轮之前的边界叠加
+
+§6.11 新增的 18 条缺口**没有一条被修复**（本轮只做复核）。其中 1–6 条（ForEach / 内置参数 / IF-ELSE / Ask 拒绝语义 / Buddy 定时任务字段 / 波动率规则）是**纯本地可实现**的，建议作为下一轮 P2 的首选；15–18 条（CDC / Volume 同步 / AI Gateway / 推理可观测性）需外部依赖或非目标，维持不做。
+
+### 本轮验证说明（诚实边界）
+
+- 本轮**未能重跑** `go build` / `go test`：本机 PATH 无 Go，且 `C:\Tools\go` 环境**缺 gcc**，CGO 构建失败（`cgo: C compiler "gcc" not found`）。改动仅限 `docs/OSS_DIFF.md` 与 `HANDOFF.md` 两个 Markdown 文件，不触碰源码，因此不影响构建与测试结果。
+- 文中所有 `文件:行号` 均已逐条回读校验（含 `quality.go:50/230`、`sync.go:99/182`、`agent.go:270/383/426/582`、`governance.go:361/365`、`auth.go:137`、`workflow.go:121/125/277`、`web/js/app.js:69`、`web/js/buddy.js:663/680/705`、`schema.sql:69/128/167/289/321`）。
+- 官方页面的"最近更新时间"已标注；2026-11 更新的两页与 §6 的 2026-08 基线存在时间差，涉及处已注明来源页 id。
+
+---
+
 ## 追加轮次 · 2026-11-13（§6.9 剩余待办收口）
 
 在 `12893c3` 之上，把 [docs/OSS_DIFF.md](docs/OSS_DIFF.md) §6.9 的「剩余待办（8 项，按依赖排序）」中**纯本地可做**的 6 项全部落地；第 7、8 项（数据科学补齐、外部依赖：CDC / BI / Ray / GPU）仍需外部系统或推理框架，保留在清单里。分支维持 `main`，不新建分支。

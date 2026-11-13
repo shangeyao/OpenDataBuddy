@@ -5,6 +5,8 @@
 > v0.4 复核与补全（2026-11-12）：按腾讯云官方「产品动态」2026-08 版逐条核对 7 大模块 37 项能力与本仓库代码，结果见下文 **§6**。复核发现的 6 处「文档声称已具备、代码实际未生效」已全部改为真实实现；30 项改进清单完成 P0 全部、P1 全部、P2 中的 6 项，剩余 8 项列在 §6.9。
 >
 > 2026-11-13 追加轮次：§6.9 剩余 8 项中纯本地可做的 6 项已全部落地（表结构演进、推理鉴权限流、看板自由布局、语义检索、行级/表级权限、资源配额），P2 累计 12 / 14；余下 2 项需外部系统。详见 [HANDOFF.md](../HANDOFF.md)「追加轮次 · 2026-11-13」。
+>
+> **2026-11-13 补充比对**：以官方[《产品功能》](https://cloud.tencent.com/document/product/1835/135579)页为入口，横向扫描了同目录 40+ 个子页（含 2026-11 更新的[基础能力](https://cloud.tencent.com/document/product/1835/140860)、[场景功能对比](https://cloud.tencent.com/document/product/1835/140844)），逐条对本仓库代码复核，新增 **§6.11**，含 20 个小节、18 条新缺口与 2 处 §5 口径更正。最重要三条：**①工作流无 ForEach 循环节点；②系统内置参数完全缺失；③Ask 模式只做到"不给工具"而无显式拒绝**。另确认 `AI Gateway`、`推理监控/日志/事件`、`数据复核`、`探索发现` 四个菜单级模块不存在。
 
 > 目标：**能力保留，商业限制清空。**
 > 本文逐条列出原产品的商业约束、云依赖与限额，以及本开源版的替代实现。
@@ -305,6 +307,283 @@
 - 主区新增**任务执行计划卡片**：标题显示「任务执行中 N/M」，清单按 ✓ / ⟳ / ○ 三态标记步骤，可折叠，折叠状态记在 `state.foldedPlans`。
 - 主区新增**分析数据表**区块：从 `table_list` / `table_schema` 产物渲染表芯片。
 - 样式集中在 `web/styles.css` 新增的 `.rail-greet` / `.rail-new` / `.rail-nav` / `.rail-status` / `.plan-*` / `.analysis-block` / `.chip` 与 `@keyframes odb-spin`。
+
+---
+
+### 6.11 补充比对：官方《产品功能》页与同目录细则页
+
+> 来源：[产品功能](https://cloud.tencent.com/document/product/1835/135579)（最近更新 2026-08-17）及其同目录子页，多为 2026-11 更新。
+> 方法：逐页抓取官方正文 → 按条目在本仓库 `internal/platform/*.go`、`web/js/*.js`、`assets/metadata.json`、`assets/schema.sql` 中定位证据 → 标注状态。
+> 本节只记 §6 未覆盖的**新增**或**口径更正**；与 §6 重复的条目不重复列出。
+
+#### 6.11.1 工作流节点类型：数量相当，集合不同
+
+官方列举 9 种任务类型：Notebook / SQL / Python / **Ray** / 离线接入 / **IF-ELSE** / **ForEach** / 嵌套 / 质量监控。
+
+本仓库 `internal/platform/workflow.go` 的 `executeNode()` switch（第 278–362 行）实际支持 9 种：
+
+| 本仓库节点 | 行号 | 官方对应 | 判定 |
+| --- | --- | --- | --- |
+| `sql` | 279 | SQL | 对齐 |
+| `python` | 281 | Python | 对齐 |
+| `notebook` | 311 | Notebook | 对齐 |
+| `subflow` | 343 | 嵌套工作流 | 对齐 |
+| `quality` | 306 | 质量监控 | 对齐 |
+| `shell` | 285 | 无 | 本仓库多出 |
+| `http` | 362 | 无 | 本仓库多出 |
+| `notify` / `approval` | 353 / 356 | 无 | 本仓库多出 |
+| — | — | **Ray** | 缺失（无分布式训练/推理框架） |
+| — | — | **IF-ELSE 分支节点** | 缺失 |
+| — | — | **ForEach 循环节点** | 缺失 |
+| — | — | 离线接入作为节点 | 部分（同步任务独立于工作流） |
+
+**关键差异**：官方把「分支」和「循环」做成**一等节点**；本仓库用**边上的运行条件**近似分支，但**没有任何循环能力**——`grep -n 'for_each\|foreach\|if_else\|ifelse\|ray' internal/platform/*.go` 零命中。这是本轮发现的最重要缺口：官方 ForEach 循环参数（见[系统内置参数](https://cloud.tencent.com/document/product/1835/138048)）在本仓库无对应物。
+
+#### 6.11.2 运行条件：12 种 ≥ 官方，但缺并发与排队
+
+`condition()`（`workflow.go:183–261`）实现 12 种：`always/all_done`、`all_success`、`any_success`、`any_failed`、`all_failed`、`has_output`、`row_threshold`、`quality_passed`、`manual_confirm`、`time_window`、`expression`。
+
+这部分**超出**官方文档列举的条件类型，判定 **对齐**。但官方[调度与触发器](https://cloud.tencent.com/document/product/1835/138065)明确提到「高级配置（排队、最大并发）」与「任务依赖」，`grep -n 'max_concurrency\|concurren\|depends_on' internal/platform/*.go` 只在 `governance.go` 命中统计计数与工作流拓扑 BFS 的局部变量 `queue`，**没有真正的并发上限控制与任务实例排队**。判定 **缺失**。
+
+#### 6.11.3 系统内置参数：完全缺失
+
+官方[系统内置参数](https://cloud.tencent.com/document/product/1835/138048)定义 4 组、30+ 个自动维护的变量：`{{workflow.id}}`、`{{workflow.run_id}}`、`{{workflow.repair_count}}`、`{{workflow.start_time.iso_date}}`、`{{workflow.trigger.time.*}}`、`{{tasks.upstream_sql.output.first_row.col_a}}`、For Each 循环参数等。
+
+本仓库的占位符渲染在 `renderValue()`（`workflow.go:156–182`），作用域只有三样：
+
+```go
+// workflow.go:277
+cfg := obj(renderValue(obj(n["config"]), M{"workflow": globalParams, "params": params, "nodes": outputs}))
+```
+
+其中 `"workflow"` 挂的是**用户自己填的 `params`**，不是系统变量。`grep -n 'start_time\|repair_count\|is_weekday\|timestamp_ms' internal/platform/*.go` **零命中**。
+
+**结论**：本仓库只有 `{{params.x}}` / `{{workflow.x}}`（用户参数）/ `{{nodes.x}}` 三级自定义引用，**没有 plan/调度时间、运行 ID、重跑次数、上游输出首行取列**这些内置参数。依赖运行时间动态过滤数据的典型写法在本仓库无法表达。判定 **缺失**，且属于影响面较大的缺口。
+
+#### 6.11.4 数据接入方案的分类口径不一致
+
+官方[支持的数据接入方案](https://cloud.tencent.com/document/product/1835/137859)列出 **5 类**：离线数据同步、实时数据同步、文件上传到表、文件上传到卷、文件批量同步到卷。
+
+本仓库 `metadata.json` 的 `ingest_plans` 也是 **5 类**，但**分类维度完全不同**：
+
+| 官方 5 类（按机制） | 本仓库 5 类（按时效/成本） |
+| --- | --- |
+| 离线数据同步 | `direct` 直连查询 |
+| 实时数据同步（CDC） | `scheduled` 定时同步 |
+| 文件上传到表 | `realtime` 实时流接入 |
+| 文件上传到卷 | `upload` 文件上传 |
+| 文件批量同步到卷 | `agent` Agent 采集 |
+
+两者都是 5 条，**但不能说"对齐"**。本仓库缺的是：
+- **CDC 实时同步**（官方明确「捕获源端 CDC 变更」「支持 DDL 变更同步」）：`sync.go:99` 只允许 `mode = full / incremental`，无日志订阅、无 DDL 同步。
+- **文件到卷 / 批量同步到卷的同步任务形态**：`volumes` 表存在（`schema.sql:321`）、`/api/volumes/upload` 存在（`ingest.go:423`），但**上传 ≠ 同步任务**，没有"在同步任务里把目标端选为 Volume"这条路径。
+
+判定：`ingest_plans` **部分对齐**（5 类数量一致、语义不一致）；CDC 与 Volume 同步任务 **缺失**。
+
+#### 6.11.5 同步任务的写入模式：只有二值
+
+官方[离线/实时同步对比]给出写入模式 `overwrite / append / upsert`，来源读取 `全量 / 增量`。
+
+本仓库 `sync_tasks` 表（`schema.sql`）字段为 `mode TEXT DEFAULT 'full'`，注释 `-- full / incremental`；`sync.go:99–100` 强制校验：
+
+```go
+if mode != "full" && mode != "incremental" { fail(422, "同步方式仅支持 full 或 incremental") }
+```
+
+即本仓库把「全量/增量」做成了 `mode`，**没有独立的写入模式（overwrite/append/upsert）选项**。`landRows()` 固定按列交集投影写入（`sync.go:182`），行为等价于 `overwrite`/`append` 之一，未暴露给用户选择。判定 **部分**。
+
+#### 6.11.6 质量规则：缺「波动率」
+
+官方[产品功能](https://cloud.tencent.com/document/product/1835/135579)「数据质量」节原文：「规则引擎：YAML 一站式规则定义、多种规则形态（**空值率、唯一性、值域、波动率、产出及时性、自定义 SQL**）」。
+
+本仓库 `metadata.json` 的 `rule_types` 为 7 种：`null / unique / range / enum / regex / sql / freshness`；`quality.go:50` 的校验白名单是 `not_null|unique|range|enum|regex|custom_sql|freshness`（同一组 7 项，`null`↔`not_null`、`sql`↔`custom_sql` 为别名，`quality.go:17–20` 做归一化）；`quality.go:230` 只对 `freshness` 做时间判断。
+
+逐一对应如下：
+
+| 官方规则形态 | 本仓库 | 判定 |
+| --- | --- | --- |
+| 空值率 | `null`（别名 `not_null`） | 对齐 |
+| 唯一性 | `unique` | 对齐 |
+| 值域 | `range` / `enum` | 对齐（拆成两种） |
+| **波动率** | **无** | **缺失** |
+| 产出及时性 | `freshness` | 对齐 |
+| 自定义 SQL | `sql`（别名 `custom_sql`） | 对齐 |
+| — | `regex` | 本仓库多出 |
+
+**结论**：6 种官方形态中 5 种有对应，缺**波动率**。注意 `drift.go` 的 KS/PSI/Wasserstein/卡方/JS 是**表级漂移指标**，不是**字段级质量规则**，两者不能互相替代。判定 **部分**。
+
+#### 6.11.7 Buddy 定时任务：字段与官方差距明显
+
+官方[基础能力](https://cloud.tencent.com/document/product/1835/140860)（2026-11-13 更新）的定时任务参数表：名称、Prompt、**Skills 选择**、**模型选择**、**执行频率（每天/按间隔/单次）**、**生效日期区间**；管理动作含暂停/恢复/**测试运行**/删除；执行记录含**产物数**与**已读状态红点**。
+
+本仓库 `buddy_tasks` 表只有 9 个字段：
+
+```sql
+-- assets/schema.sql:289
+CREATE TABLE IF NOT EXISTS buddy_tasks (
+    id, workspace_id, user_id, name, prompt, cron, enabled, last_run, created_at
+);
+```
+
+| 官方字段 | 本仓库 | 判定 |
+| --- | --- | --- |
+| 名称 / Prompt | `name` / `prompt` | 对齐 |
+| 执行频率三态 | 仅 `cron` 单字段，无「每天/按间隔/单次」概念 | 部分 |
+| Skills 选择 | 无字段（`buddyTask()` 用 `agent()` 默认工具集） | 缺失 |
+| 模型选择 | 无字段 | 缺失 |
+| 生效日期区间 | 无字段 | 缺失 |
+| 暂停/恢复 | `enabled` 0/1，等价但无独立动作语义 | 部分 |
+| 测试运行 | 无独立接口（只能等 cron 或手动跑） | 缺失 |
+| 执行记录产物数 / 已读红点 | `buddy_task_runs` 有 `summary`，无产物计数、无已读状态 | 部分 |
+
+#### 6.11.8 Ask 模式：只做到"不给工具"
+
+官方语义（同页）：Ask 模式下**产物仅支持只读类**（Markdown/HTML 预览），**不会创建工作流、数据接入任务、指标等需要落地的资产**；提交修改类请求时「Buddy 会拒绝执行并提示需切换到 Agent 模式」。
+
+本仓库实现只有一处（`internal/platform/agent.go:426–428`）：
+
+```go
+if state["chat_mode"] == "ask" { tools = nil }
+```
+
+即**仅仅清空工具列表**，靠"没有工具就改不了数据"隐式兜底。缺三样：
+1. **没有显式拒绝话术**——模型可能直接口头答应"好的我帮你改"，而不提示切换 Agent 模式；
+2. **没有限制产物类型**——`artifact()`（`agent.go:383–409`）的 8 种产物是工具输出驱动的，`tools=nil` 时自然不产生，但没有"只读产物白名单"这一层；
+3. 前端提示语是 `'Ask 模式不改数据'`（`web/js/buddy.js:663`），语义接近但不等价于官方"拒绝并引导切换"。
+
+判定 **部分**。
+
+#### 6.11.9 「产物」概念：本仓库是工具结果卡片，不是文件
+
+官方把产物定义为**文件级实体**：Markdown / HTML / Notebook / SQL / Python 文件，支持「跳转至 Studio 查看源文件」、**文件变更 diff**、「在对话中复用产物」。
+
+本仓库 `artifact()`（`agent.go:383–409`）+ `web/js/artifact.js` 的 8 种类型是**渲染卡片**：`query`、`table_schema`、`table_list`、`sensitive_scan`、`quality_results`、`quality_suggestions`、`knowledge`、`json`。它们是**一次工具调用的返回值快照**，不落文件、无 diff、不能在后续对话中按引用复用。判定 **部分**（形态不同，不可直接对标）。
+
+#### 6.11.10 @ 引用对象类型：2 种 vs 官方 8 + 3
+
+官方分模式给出可 @ 的对象类型：
+- **数据开发模式（8 种）**：表、Notebooks、SQL、文件、文件夹、工作流、指标模型、知识文件；
+- **数据分析模式（3 种）**：表、指标模型、知识文件，且「仅能引用当前分析空间内的资产」。
+
+本仓库 `openRefPicker()`（`web/js/buddy.js:680–714`）只提供**两类**：数据表（`/catalog/tables`，取前 8 条）与知识库文档（`/knowledge`，取前 6 条）。`state.refs` 只是拼进输入框的字符串（`buddy.js:705`），**没有结构化引用随消息传给后端**做权限校验或上下文注入。
+
+判定 **部分**：核心两类有，Notebook/SQL/文件夹/工作流/指标模型 5 类缺失；「仅空间内可见」的约束也没有。
+
+#### 6.11.11 两场景模式（轻量分析 / 智能湖仓）：无对应概念
+
+官方[场景功能对比](https://cloud.tencent.com/document/product/1835/140844)（2026-11-13 更新）区分**两种开通场景**且**开通后不可变更**，功能差异集中在数据工作台（数据集成、数据工程、AI/ML、智能应用在轻量场景为 ×）。
+
+本仓库是**单一形态**：`web/js/app.js:69–76` 的导航固定 8 组 24 个模块，没有场景开关，也没有"按场景裁剪菜单"的逻辑。判定 **刻意不做**——开源版本地全量能力，没有商业分层动机。建议在文档里明确这一点，避免用户以为漏做。
+
+官方数据工作台 **16 个菜单**与本仓库的对应关系（轻量 / 智能湖仓两列的 ✓× 见官方原文）：
+
+| 官方菜单 | 本仓库 | 说明 |
+| --- | --- | --- |
+| Hi Buddy | `buddy` | 对齐 |
+| 快速开始 | 无 | 缺失（无入门引导页） |
+| 数据源管理 | `sources` | 对齐 |
+| 数据集成 | `ingest` | 部分（无 CDC） |
+| 数据目录 | `catalog` | 对齐 |
+| 数据分析 | `sql` / `analysis` | 对齐 |
+| 分析智能体 | `agents` | 对齐 |
+| AI 看板 | `dashboards` | 对齐 |
+| 语义 | `semantic` / `ontology` | 对齐 |
+| 数据工程 | `studio` / `flows` / `cicd` / `ops` | 对齐 |
+| AI Gateway | **无** | 缺失（见 §6.11.12） |
+| AI/ML | `exp` / `features` / `registry` / `serving` | 对齐 |
+| 智能应用 | `agents` / `mcp` / `modellist` | 对齐 |
+| 数据治理 | `quality` / `security` / `lineage` | 对齐 |
+| 工作空间 | `members` | 对齐 |
+| 计算资源 | `compute` | 对齐 |
+
+#### 6.11.12 AI Gateway：完全缺失
+
+官方[什么是 AI Gateway](https://cloud.tencent.com/document/product/1835/139401)定义三段式：**平台预置模型** + **接入模型**（含 VPC 内自建模型接入）+ **编排接入点**（把多个模型编排成一个统一 endpoint）。
+
+`grep -in 'gateway' internal/platform/*.go web/js/*.js` **零命中**。本仓库的模型配置在 `auth.go:137` 的 `/settings` 里硬编码两个 provider（DeepSeek、Ollama 本地），`/models` 与 `/modellist` 是**只读列表**，无接入登记、无编排、无统一 endpoint。
+
+判定 **缺失**。注意这是官方数据科学板块的入口模块，影响面比单个功能点大。
+
+#### 6.11.13 推理服务的可观测性：缺监控/日志/事件
+
+官方[推理监控与日志](https://cloud.tencent.com/document/product/1835/137615)提供：运行指标、实例日志、**通过 SDK 查询日志并重启实例**、**服务事件**、日志投递、**基于推理表发起质量监控**；[资源配置与自动伸缩](https://cloud.tencent.com/document/product/1835/137612)提供副本数与 SDK 调节运行状态。
+
+本仓库 `serveguard.go`（7.7 KB）只做**鉴权 + 令牌桶限流**（`predictGuarded`），`mlops.go` 的 serving 部分有服务登记与 `/predict`，但：
+- `grep -in 'inference_log\|推理表\|service_event\|batch_predict' internal/platform/*.go` **零命中**；
+- 无副本数概念、无实例、无日志、无事件、无自动伸缩。
+
+判定 **缺失**，且属于「需真实运行时支撑、开源版难以等价实现」的一类，建议保留在 §8 的明确不做清单里。
+
+#### 6.11.14 模型目录/实验/特征：口径正确，细节待补
+
+`§6.3` 已记录 5 项差距，本轮复核确认**没有新的口径错误**。补充两条实测：
+
+- 官方[模型 Catalog](https://cloud.tencent.com/document/product/1835/137796)的「复制模型版本」「删除模型版本」「模型血缘」在本仓库只有 `/registry/models` 的增删查，**无版本复制、无模型血缘**。
+- 官方[数据血缘](https://cloud.tencent.com/document/product/1835/137798)含**模型血缘**；本仓库 `lineage.go`（7.7 KB）只处理**表级血缘**（`/lineage/graph` 按 `table_ref`），无模型节点。
+
+#### 6.11.15 标签体系：有列级打标，无治理标签体系
+
+官方数据治理含独立的**治理标签**模块（[创建与管理标签体系](https://cloud.tencent.com/document/product/1835/137972)、[为数据资产打标签](https://cloud.tencent.com/document/product/1835/137679)、[基于标签的策略控制](https://cloud.tencent.com/document/product/1835/137971)）。
+
+本仓库只有**列级敏感标签** `column_tags(column_id, tag, level, source, confidence, evidence)`（`assets/schema.sql:69–79`，级别 L1 公开 / L2 内部 / L3 敏感 / L4 机密；写入见 `governance.go:365–373`、`agent.go:270–275`；查询 `/api/governance/tags` 见 `governance.go:361`）。
+
+缺的是：标签**体系/词表**（多层标签树）、对**表/视图/文件/模型**等非列资产的打标、以及**基于标签的策略**（`grants.go` 是行/表级 grants，不读取标签）。判定 **部分**。
+
+#### 6.11.16 数据复核 / 探索发现 / 个人偏好：三个菜单级缺口
+
+官方分析工作台菜单里有三项本仓库完全没有：
+
+| 官方菜单 | 官方说明 | 本仓库证据 | 判定 |
+| --- | --- | --- | --- |
+| **数据复核** | 把分析结果提交空间管理员或编辑者人工校验 | `grep -n 'review\|复核' internal/platform/*.go` 只命中 `approvals`（Agent 工具确认），**不是**结果复核流程 | 缺失 |
+| **探索发现** | 统一检索空间内表/视图/仪表盘/文件/智能体/指标/语义模型 | 只有 `semanticSearch`（`semantic.go:240`，供知识检索）与 `/knowledge-search`，**无跨类型统一检索入口** | 缺失 |
+| **设置-个人偏好** | 管理个人记忆与偏好 | `memories` 表与 `/api/memory` 三个路由存在（`agent.go:582–587`），**记忆有、偏好无**（`grep -i 'preference\|个人偏好'` 只命中通知主题色） | 部分 |
+
+#### 6.11.17 全局数据搜索：无排序权重
+
+官方[全局数据搜索](https://cloud.tencent.com/document/product/1835/137799)给出固定排序权重：**语义 50% / 关键字 30% / 热度 20%**，热度按近 30 天查询访问次数统计。
+
+本仓库 `semanticSearch()` 注释明确写「余弦相似度 + 倒排词权重，按 **0.65/0.35** 融合」（`semantic.go:239–240`），**没有热度因子**，也没有 30 天使用统计。判定 **部分**。
+
+#### 6.11.18 工作流调度：缺调度起止时间
+
+官方[调度与触发器](https://cloud.tencent.com/document/product/1835/138065)：「调度时间范围结束后，工作流自动停止生成实例」，即调度配置含**起止时间范围**。
+
+本仓库 `flows` 表字段（`schema.sql:167–179`）为 `cron / enabled / retries / params / run_mode / interval_seconds / timezone / run_at / trigger_key`，**无调度起止时间**（`grep -n 'schedule_start\|schedule_end\|start_date\|end_date'` 零命中）。判定 **缺失**。
+
+**对齐的部分**：官方两种触发方式（定时触发 / 持续运行）+ 手动触发，本仓库 `run_mode` 支持 `cron / continuous / manual / once / event`（`workflow.go:121`），**超出**官方；持续运行 60 秒间隔由 `interval_seconds` 保证（`workflow.go:125` 下限 60），与官方「间隔 60 秒触发下一次」一致；时区字段有（默认 `Asia/Shanghai`）。
+
+#### 6.11.19 修正 §5 的两处口径
+
+| 位置 | 原文 | 复核结论 |
+| --- | --- | --- |
+| §5 数据接入行「数据源模板 60 个 > 官方 47+」 | 只比了**数量** | 数量对齐成立（`metadata.json.source_templates` 实测 60），但官方 5 大接入方案按**机制**分类，本仓库按**时效**分类，**不可用数量比较代替能力比较**。已在本节 §6.11.4 展开。 |
+| §5 工作流行「9 种节点类型」 | 只比了**数量** | 官方 9 种与本仓库 9 种集合不同（本仓库多 shell/http/notify/approval，缺 Ray/IF-ELSE/ForEach）。数量巧合，能力不等价。已在 §6.11.1 展开。 |
+
+#### 6.11.20 本轮新增缺口汇总（按建议修复顺序）
+
+| # | 缺口 | 影响 | 本地可实现性 |
+| --- | --- | --- | --- |
+| 1 | **ForEach 循环节点** | 批量处理场景无法表达 | 高（循环 + 子图执行，`runFlow` 已有递归能力） |
+| 2 | **系统内置参数** | 按运行时间动态取数完全缺失 | 高（纯渲染层，`renderValue` 扩展作用域即可） |
+| 3 | **IF-ELSE 一等工作流节点** | 分支目前只能用边条件近似 | 高 |
+| 4 | **Ask 模式显式拒绝 + 只读产物白名单** | 安全语义不完整 | 高（加一层拦截与话术） |
+| 5 | **Buddy 定时任务的 Skills/模型/生效区间/测试运行** | 与官方任务台差距明显 | 高（加字段 + 一个 POST 接口） |
+| 6 | **波动率质量规则** | 缺一类规则形态（官方 6 种里唯一缺的） | 高（复用 `drift.go` 的基线算法，改为字段级） |
+| 7 | **产物文件化 + diff** | 产物无法长期复用 | 中（需落文件 + Studio 联动） |
+| 8 | **@ 引用结构化传参** | 引用只是字符串，无权限校验 | 中 |
+| 9 | **统一检索（探索发现）** | 无跨类型入口 | 中（复用 `semanticSearch` 扩类型） |
+| 10 | **数据复核流程** | 分析结果无人工校验环节 | 中 |
+| 11 | **治理标签体系** | 只有列级敏感标签 | 中 |
+| 12 | **工作流并发上限与排队** | 大批量调度会打满 | 中 |
+| 13 | **调度起止时间** | 调度无法自动结束 | 低 |
+| 14 | **全局搜索热度因子** | 排序口径不同 | 低 |
+| 15 | **CDC 实时同步** | 需消息中间件 | 低（外部依赖，保留不做的判定） |
+| 16 | **Volume 同步任务形态** | 只能上传，不能作为同步目标 | 中 |
+| 17 | **AI Gateway** | 缺整个模块 | 低（无多模型编排需求可解释） |
+| 18 | **推理监控/日志/事件** | 需真实运行时 | 低（保留不做） |
+
+> 其中 1–6 属于「结构完整但有明显洞」，建议优先；7–14 属于「有替代路径，体验差距」；15–18 属于「外部依赖或非目标」。
 
 ---
 
