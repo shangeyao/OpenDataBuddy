@@ -334,7 +334,8 @@ func (a *App) mlopsRoutes() []route {
 			return M{"service": a.service(c.WS, a.owned("model_services", c.p("service_id"), c.WS))}
 		}},
 		{"POST", "/api/serving/services/{service_id}/predict", false, false, func(c *request) any {
-			return a.predict(c.WS, c.p("service_id"), c.Body)
+			// P2-5：先做工作空间鉴权与令牌桶限流，再进入真实推理
+			return a.predictGuarded(c, c.p("service_id"), c.Body)
 		}},
 		{"POST", "/api/serving/services/{service_id}/traffic", false, false, func(c *request) any {
 			s := a.owned("model_services", c.p("service_id"), c.WS)

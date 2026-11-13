@@ -222,6 +222,15 @@ func (a *App) qualify(ws, q string) string {
 	}
 	return strings.Join(parts, " ")
 }
+
+// queryAs is the user-facing read path: it applies the row/table grant policy
+// (P2-8) before delegating to query(). Internal callers (workflow nodes,
+// notebooks, tests) keep using query() directly and are not subject to grants.
+func (a *App) queryAs(ws string, user M, q string, limit int) M {
+	q = a.enforceReadGrant(ws, user, q)
+	return a.query(ws, q, limit)
+}
+
 func (a *App) query(ws, q string, limit int) M {
 	start := time.Now()
 	q = a.qualify(ws, guard(q))

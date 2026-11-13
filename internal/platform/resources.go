@@ -117,9 +117,13 @@ func (a *App) resourceRoutes() []route {
 				m["user_id"] = c.User["id"]
 			}
 			a.validateResource(d, m, c)
+			a.checkQuota(c.WS, d.Table) // P2-12：新建前校验工作空间配额
 			a.insert(d.Table, m)
 			if d.Table == "features" {
 				a.featureRevision(c.WS, m)
+			}
+			if d.Table == "knowledge_docs" {
+				a.indexKnowledgeDoc(c.WS, str(m["id"])) // P2-7：增量维护语义索引
 			}
 			a.audit(c.WS, str(c.User["id"]), "create_"+d.Singular, str(m["id"]))
 			return M{d.Singular: decoded(a.owned(d.Table, str(m["id"]), c.WS))}
@@ -171,11 +175,18 @@ func (a *App) resourceRoutes() []route {
 			if d.Table == "features" {
 				a.featureRevision(c.WS, a.owned(d.Table, c.p(d.Param), c.WS))
 			}
+			if d.Table == "knowledge_docs" {
+				a.indexKnowledgeDoc(c.WS, c.p(d.Param)) // P2-7：内容变更后重建该文档向量
+			}
 			return M{d.Singular: decoded(a.owned(d.Table, c.p(d.Param), c.WS)), "ok": true}
 		}})
 		routes = append(routes, route{"DELETE", path, false, false, func(c *request) any {
 			a.owned(d.Table, c.p(d.Param), c.WS)
 			a.exec("DELETE FROM "+quote(d.Table)+" WHERE id=?", c.p(d.Param))
+			if d.Table == "knowledge_docs" {
+				a.exec("DELETE FROM doc_embeddings WHERE doc_id=?", c.p(d.Param))
+				a.exec("DELETE FROM doc_terms WHERE doc_id=?", c.p(d.Param))
+			}
 			return M{"ok": true}
 		}})
 	}
@@ -237,7 +248,8 @@ func (a *App) resourceRoutes() []route {
 			return M{"experiment": r}
 		}},
 		route{"GET", "/api/knowledge-search", false, false, func(c *request) any {
-			return M{"results": a.rows("SELECT * FROM knowledge_docs WHERE workspace_id=? AND (title LIKE ? OR content LIKE ?)", c.WS, "%"+c.q("q")+"%", "%"+c.q("q")+"%")}
+			// P2-7：关键词 LIKE 升级为「向量 + 倒排」混合召回，纯词面查询仍兜底到 IDF
+			return M{"results": a.hybridKnowledge(c.WS, c.q("q"), int(num(def(M{"limit": c.q("limit")}, "limit", 8))))}
 		}},
 		route{"POST", "/api/knowledge/rebuild-catalog", false, false, func(c *request) any {
 			count := 0

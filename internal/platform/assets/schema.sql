@@ -632,6 +632,79 @@ CREATE TABLE IF NOT EXISTS analysis_embeds (
     revoked INTEGER DEFAULT 0,
     created_at TEXT
 );
+-- ---- P2 剩余待办新增实体（见 docs/OSS_DIFF.md §6.9）----
+
+-- P2-3 表结构演进记录：一次 DESCRIBE diff 落一条，记录新增列与累计演进次数
+CREATE TABLE IF NOT EXISTS table_evolutions (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    table_ref TEXT NOT NULL,
+    added_columns TEXT DEFAULT '[]',       -- JSON: [{name,type}]
+    removed_columns TEXT DEFAULT '[]',
+    before_columns INTEGER DEFAULT 0,
+    after_columns INTEGER DEFAULT 0,
+    trigger TEXT DEFAULT 'manual',         -- manual / drift
+    detail TEXT DEFAULT '',
+    created_at TEXT NOT NULL
+);
+
+-- P2-5 推理服务访问令牌（只存哈希，明文仅在创建响应里返回一次）
+CREATE TABLE IF NOT EXISTS predict_tokens (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    token_hash TEXT NOT NULL,
+    masked TEXT DEFAULT '',
+    service_id TEXT DEFAULT '',           -- 空表示工作空间全部服务
+    scopes TEXT DEFAULT '["predict"]',    -- JSON 数组
+    enabled INTEGER DEFAULT 1,
+    created_by TEXT DEFAULT '',
+    created_at TEXT NOT NULL,
+    last_used_at TEXT DEFAULT ''
+);
+
+-- P2-7 语义检索：文档 embedding 与倒排词条索引（本地哈希向量，无外部模型）
+CREATE TABLE IF NOT EXISTS doc_embeddings (
+    doc_id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    vector TEXT DEFAULT '[]',             -- JSON: 归一化后的稀疏向量 [[idx,weight],...]
+    dim INTEGER DEFAULT 256,
+    indexed_at TEXT NOT NULL,
+    content_hash TEXT DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS doc_terms (
+    workspace_id TEXT NOT NULL,
+    term TEXT NOT NULL,
+    doc_id TEXT NOT NULL,
+    weight REAL DEFAULT 1,
+    PRIMARY KEY (workspace_id, term, doc_id)
+);
+
+-- P2-8 行级 / 表级授权实体
+CREATE TABLE IF NOT EXISTS grants (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    subject_type TEXT NOT NULL DEFAULT 'user',   -- user / role / workspace
+    subject TEXT NOT NULL,                      -- user id / role / '*'
+    object_type TEXT NOT NULL DEFAULT 'table',   -- table / catalog / schema / column
+    object_ref TEXT NOT NULL,                   -- 三段名或前缀，'*' 表示全部
+    actions TEXT DEFAULT '["select"]',          -- select / insert / update / delete / all
+    row_predicate TEXT DEFAULT '',              -- 行级谓词，如 region = '华东'
+    effect TEXT NOT NULL DEFAULT 'allow',        -- allow / deny
+    enabled INTEGER DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT
+);
+
+-- P2-12 工作空间资源配额：按资源维度限制数量
+CREATE TABLE IF NOT EXISTS workspace_quota (
+    workspace_id TEXT NOT NULL,
+    resource TEXT NOT NULL,                -- tables / flows / dashboards / agents / sources / conversations
+    max_items INTEGER DEFAULT -1,          -- -1 表示不限制
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (workspace_id, resource)
+);
+
 CREATE INDEX IF NOT EXISTS idx_tables_schema ON tables(schema_id);
 CREATE INDEX IF NOT EXISTS idx_columns_table ON columns(table_id);
 CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id, created_at);
@@ -652,3 +725,9 @@ CREATE INDEX IF NOT EXISTS idx_report_sched_ws ON report_schedules(workspace_id)
 CREATE INDEX IF NOT EXISTS idx_reports_ws ON reports(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_embeds_token ON analysis_embeds(token);
 CREATE INDEX IF NOT EXISTS idx_baseline_ref ON profile_baselines(table_ref, column_name);
+CREATE INDEX IF NOT EXISTS idx_evolutions_ws ON table_evolutions(workspace_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_predict_tokens_ws ON predict_tokens(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_predict_tokens_hash ON predict_tokens(token_hash);
+CREATE INDEX IF NOT EXISTS idx_doc_terms_ws ON doc_terms(workspace_id, term);
+CREATE INDEX IF NOT EXISTS idx_doc_embeddings_ws ON doc_embeddings(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_grants_ws ON grants(workspace_id, subject);

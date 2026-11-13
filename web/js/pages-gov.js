@@ -365,11 +365,82 @@ function chartTypeLabel(type) {
   return hit ? hit.label : (type || '表格');
 }
 
+/* ------------------------------------------ 看板自由布局（栅格 / 尺寸 / 吸附） */
+// 12 列栅格：卡片可占 1/2 宽、全宽，宽度与高度都按行高吸附。
+const GRID_COLS = 12;
+const CARD_SIZES = [
+  { value: 'half', label: '半宽 (6 列)', span: 6, minH: 240 },
+  { value: 'full', label: '全宽 (12 列)', span: 12, minH: 260 },
+  { value: 'third', label: '三分之一 (4 列)', span: 4, minH: 220 },
+];
+const LAYOUT_ROW_PX = 20; // 吸附步长
+
+function sizeOf(c) {
+  return CARD_SIZES.find((s) => s.value === (c && c.layout && c.layout.size)) || CARD_SIZES[0];
+}
+function spanOf(c) { return sizeOf(c).span; }
+function minHOf(c) { return sizeOf(c).minH; }
+function heightOf(c) {
+  const h = Number(c && c.layout && c.layout.h);
+  return Number.isFinite(h) && h >= minHOf(c) ? h : minHOf(c);
+}
+// 把像素高度吸附到 20px 栅格，且不低于该尺寸的最小高度
+function snapHeight(px, c) {
+  const min = minHOf(c);
+  return Math.max(min, Math.round(px / LAYOUT_ROW_PX) * LAYOUT_ROW_PX);
+}
+// 依据卡片顺序生成初始栅格坐标（按顺序逐行填充 6+6 / 12 / 4+4+4）
+function layoutFor(cards) {
+  const out = [];
+  let col = 0;
+  let row = 0;
+  let rowH = 0;
+  cards.forEach((c) => {
+    const span = spanOf(c);
+    if (col + span > GRID_COLS) { col = 0; row += rowH || 1; rowH = 0; }
+    const h = heightOf(c);
+    out.push({ size: sizeOf(c).value, x: col, y: row, w: span, h });
+    col += span;
+    rowH = Math.max(rowH, Math.round(h / LAYOUT_ROW_PX));
+  });
+  return out;
+}
+// 合并后端返回的 spec（可能带 layout）与卡片定义，缺失则补默认布局
+function normalizeCards(cards, spec) {
+  const saved = (spec && Array.isArray(spec.layout)) ? spec.layout : [];
+  const list = (cards || []).map((c) => ({ ...c }));
+  const auto = layoutFor(list);
+  list.forEach((c, i) => {
+    const s = saved[i] || {};
+    c.layout = {
+      size: sizeOf({ layout: s }).value,
+      x: Number.isFinite(Number(s.x)) ? Number(s.x) : auto[i].x,
+      y: Number.isFinite(Number(s.y)) ? Number(s.y) : auto[i].y,
+      w: spanOf({ layout: s }),
+      h: heightOf({ layout: s.size ? s : { ...s, size: s.size } }),
+    };
+    // 尺寸决定宽度；高度用保存值或该尺寸默认最小高度
+    c.layout.h = Number.isFinite(Number(s.h)) && Number(s.h) >= minHOf(c)
+      ? snapHeight(Number(s.h), c) : minHOf(c);
+  });
+  return list;
+}
+
 // spec 里只保留卡片定义，查询结果由后端渲染时实时计算
 function toStoredCard(c) {
   const out = { title: c.title || '未命名卡片', sql: c.sql || '', chart: c.chart || { type: 'table' } };
   if (c.source) out.source = c.source;
   return out;
+}
+// spec.layout 与 spec.cards 一一对应，落到 dashboards.spec 一起保存
+function toStoredLayout(cards) {
+  return cards.map((c) => ({
+    size: sizeOf(c).value,
+    x: (c.layout && c.layout.x) || 0,
+    y: (c.layout && c.layout.y) || 0,
+    w: spanOf(c),
+    h: heightOf(c),
+  }));
 }
 
 // 拖拽排序：把 from 位置的卡片移动到 to 位置的前/后半区
@@ -446,7 +517,7 @@ export async function renderDashboards(page, ctx) {
 
   const listHost = page.querySelector('#board-list');
   const boardHost = page.querySelector('#board');
-  const state = { id: '', board: null, spec: {}, cards: [] };
+  const state = { id: '', board: null, spec: {}, cards: [], gridOn: false };
 
   const renderList = (rows) => {
     listHost.innerHTML = dataTable({
@@ -469,49 +540,117 @@ export async function renderDashboards(page, ctx) {
     );
   };
 
-  // 卡片定义：标题 + 只读 SQL + 图表类型
+  // 卡片定义：标题 + 只读 SQL + 图表类型 + 自由布局尺寸
   const boardCard = (c, i) => {
     const type = (c.chart || {}).type || 'table';
     const rows = c.rows || [];
-    const body = c.error
+    const body = `<div class="card-body">${c.error
       ? `<div class="tag red">渲染失败</div><div class="tiny mt-8">${esc(c.error)}</div>`
       : type === 'table'
         ? tableHTML(c.columns, rows, { max: 8 })
         : `${chartHTML(c.chart, c.columns, rows)}
-          <details class="mt-8"><summary class="tiny dim" style="cursor:pointer">明细</summary>
-            <div class="mt-8">${tableHTML(c.columns, rows, { max: 8 })}</div></details>`;
+           <details class="mt-8"><summary class="tiny dim" style="cursor:pointer">明细</summary>
+             <div class="mt-8">${tableHTML(c.columns, rows, { max: 8 })}</div></details>`}</div>`;
+    const size = sizeOf(c);
+    const sizeSel = `<select class="board-size-sel" data-card-size="${i}" title="卡片宽度">
+      ${CARD_SIZES.map((s) => `<option value="${s.value}"${s.value === size.value ? ' selected' : ''}>${esc(s.label)}</option>`).join('')}
+    </select>`;
     const ops = `<div class="row" style="gap:10px;align-items:center">
+        ${sizeSel}
         <span draggable="true" data-drag="${i}" title="拖拽调整顺序" style="cursor:grab;color:var(--text-3);user-select:none;font-size:14px;line-height:1">⠿</span>
         <a class="btn-link" data-card-edit="${i}">编辑</a>
         <a class="btn-link danger" data-card-del="${i}">删除</a>
       </div>`;
-    const sub = `${c.row_count ?? rows.length} 行${c.elapsed_ms != null ? ` · ${c.elapsed_ms} ms` : ''} · ${chartTypeLabel(type)}`;
-    return `<div data-card-idx="${i}" style="display:flex;flex-direction:column">
+    const sub = `${c.row_count ?? rows.length} 行${c.elapsed_ms != null ? ` · ${c.elapsed_ms} ms` : ''} · ${chartTypeLabel(type)} · ${esc(size.label)}`;
+    const span = spanOf(c);
+    const h = heightOf(c);
+    return `<div class="board-cell" data-card-idx="${i}"
+        style="grid-column:span ${span};min-height:${h}px;position:relative">
       ${card(c.title || '未命名卡片', body, { sub, actions: ops })}
+      <span class="resize-handle" data-card-resize="${i}" title="拖动调整高度（按 ${LAYOUT_ROW_PX}px 吸附）">▾</span>
     </div>`;
   };
 
+
   const renderBoard = () => {
     const board = state.board || {};
+    const showGrid = !!state.gridOn;
     boardHost.innerHTML = `
       <div class="row" style="justify-content:space-between;margin-bottom:12px">
         <div><h3>${esc(board.name || '')}</h3><div class="tiny dim">${esc(board.description || '')}</div></div>
         <div class="row" style="gap:8px;align-items:center">
-          <span class="dim tiny">拖动 ⠿ 可排序</span>
+          <span class="dim tiny">拖动 ⠿ 排序 · 卡片右下角 ▾ 调高度</span>
           <span class="tag">${state.cards.length} 张卡片</span>
           <button class="btn sm primary" id="board-add">＋ 添加卡片</button>
         </div>
       </div>
-      <div class="grid-2">${state.cards.length
+      <div class="board-layout-bar" style="margin-bottom:10px">
+        <span class="seg-label">布局</span>
+        <button class="btn sm" id="board-grid-toggle">${showGrid ? '隐藏栅格' : '显示栅格'}</button>
+        <button class="btn sm" id="board-auto">自动排布</button>
+        <button class="btn sm" id="board-save-layout">保存布局</button>
+        <span class="dim tiny">12 列栅格 · 高度按 ${LAYOUT_ROW_PX}px 吸附</span>
+      </div>
+      <div class="board-canvas ${showGrid ? 'grid-on' : ''}" id="board-canvas">${state.cards.length
         ? state.cards.map((c, i) => boardCard(c, i)).join('')
         : `<div style="grid-column:1/-1"><div class="card">${emptyState('还没有卡片', '点右上角「添加卡片」，用一句话描述你想看的数据')}</div></div>`}
       </div>`;
     boardHost.querySelector('#board-add').addEventListener('click', addCard);
+    boardHost.querySelector('#board-grid-toggle').addEventListener('click', () => {
+      state.gridOn = !state.gridOn;
+      renderBoard();
+    });
+    boardHost.querySelector('#board-auto').addEventListener('click', () => {
+      state.cards = normalizeCards(state.cards.map((c) => { const n = { ...c }; delete n.layout; return n; }), {});
+      saveCards(state.cards, '已自动排布');
+    });
+    boardHost.querySelector('#board-save-layout').addEventListener('click', () => {
+      saveCards(state.cards, '布局已保存');
+    });
     boardHost.querySelectorAll('[data-card-edit]').forEach((b) =>
       b.addEventListener('click', () => openCardEditor(Number(b.dataset.cardEdit)))
     );
     boardHost.querySelectorAll('[data-card-del]').forEach((b) =>
       b.addEventListener('click', () => removeCard(Number(b.dataset.cardDel)))
+    );
+    // 卡片宽度：下拉切换后重算栅格列并保存
+    boardHost.querySelectorAll('[data-card-size]').forEach((sel) =>
+      sel.addEventListener('change', () => {
+        const idx = Number(sel.dataset.cardSize);
+        const c = state.cards[idx];
+        if (!c) return;
+        c.layout = { ...(c.layout || {}), size: sel.value, w: spanOf({ layout: { size: sel.value } }) };
+        c.layout.h = Math.max(heightOf(c), minHOf(c));
+        saveCards(state.cards, '卡片宽度已更新');
+      })
+    );
+    // 卡片高度：拖动手柄实时预览，松手按栅格吸附并保存
+    boardHost.querySelectorAll('[data-card-resize]').forEach((h) =>
+      h.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const idx = Number(h.dataset.cardResize);
+        const cell = h.closest('[data-card-idx]');
+        if (!cell) return;
+        const startY = e.clientY;
+        const startH = cell.getBoundingClientRect().height;
+        const onMove = (ev) => {
+          const px = Math.max(minHOf(state.cards[idx]), startH + ev.clientY - startY);
+          cell.style.minHeight = `${snapHeight(px, state.cards[idx])}px`;
+        };
+        const onUp = (ev) => {
+          document.removeEventListener('mousemove', onMove);
+          document.removeEventListener('mouseup', onUp);
+          const px = Math.max(minHOf(state.cards[idx]), startH + ev.clientY - startY);
+          const snapped = snapHeight(px, state.cards[idx]);
+          if (state.cards[idx]) {
+            state.cards[idx].layout = { ...(state.cards[idx].layout || {}), h: snapped };
+            saveCards(state.cards, '卡片高度已更新');
+          }
+        };
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
+      })
     );
     bindCardDragging(boardHost, reorderCards);
   };
@@ -529,15 +668,15 @@ export async function renderDashboards(page, ctx) {
     state.id = board.id || id;
     state.board = board;
     state.spec = board.spec && typeof board.spec === 'object' ? board.spec : {};
-    state.cards = (out.cards || []).map((c) => ({ ...c }));
+    state.cards = normalizeCards((out.cards || []).map((c) => ({ ...c })), state.spec);
     renderBoard();
   };
 
   // 卡片定义变更统一走 PATCH：spec.cards 整体替换
   const saveCards = async (cards, message) => {
     const stored = cards.map(toStoredCard);
-    await api.patch(`/dashboards/${state.id}`, { spec: { ...state.spec, cards: stored } });
-    state.spec = { ...state.spec, cards: stored };
+    await api.patch(`/dashboards/${state.id}`, { spec: { ...state.spec, cards: stored, layout: toStoredLayout(cards) } });
+    state.spec = { ...state.spec, cards: stored, layout: toStoredLayout(cards) };
     state.cards = cards;
     if (message) toast(message, 'ok');
     renderBoard();

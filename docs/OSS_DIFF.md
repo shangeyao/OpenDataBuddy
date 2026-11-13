@@ -3,6 +3,8 @@
 > v0.4：后端已迁移为 GoFrame v2.10.4，Python 仅作代码执行内核。以下能力表描述产品定位；具体实现边界与验收范围以 [HANDOFF](../HANDOFF.md) 为准。
 >
 > v0.4 复核与补全（2026-11-12）：按腾讯云官方「产品动态」2026-08 版逐条核对 7 大模块 37 项能力与本仓库代码，结果见下文 **§6**。复核发现的 6 处「文档声称已具备、代码实际未生效」已全部改为真实实现；30 项改进清单完成 P0 全部、P1 全部、P2 中的 6 项，剩余 8 项列在 §6.9。
+>
+> 2026-11-13 追加轮次：§6.9 剩余 8 项中纯本地可做的 6 项已全部落地（表结构演进、推理鉴权限流、看板自由布局、语义检索、行级/表级权限、资源配额），P2 累计 12 / 14；余下 2 项需外部系统。详见 [HANDOFF.md](../HANDOFF.md)「追加轮次 · 2026-11-13」。
 
 > 目标：**能力保留，商业限制清空。**
 > 本文逐条列出原产品的商业约束、云依赖与限额，以及本开源版的替代实现。
@@ -173,7 +175,7 @@
 | --- | --- | --- | --- |
 | 多模态统一管理：Catalog / Schema / Table / Model / Volume / Function | 对齐 | `governance.go:370-400` `catalogTree()` 返回六类计数；`pages-catalog.js:1,136-175` 多模态目录树 | 六模态齐全，volume / function 仅 CRUD，无专项管理页 |
 | AI 语义搜索：自然语言查询数据资产 | 部分 | `resources.go:239-241` `/api/knowledge-search` 为 SQL `LIKE '%q%'`；`heuristic.go:11-55` 二元切分 + IDF 加权（仍是词面）；`resources.go:242-252` rebuild-catalog 把表元数据灌进 knowledge_docs 供 LIKE 匹配 | 无 embedding / 向量库 / 余弦检索；NL 检索未命中指标直接 422（`analysis.go:176-178`） |
-| 数据质量监控：规则配置 + 异常检测 + 剖析 | 对齐 | `quality.go:96-141` 规则引擎 7 类（`quality.go:50` 允许 not_null/unique/range/enum/regex/custom_sql/freshness）；`quality.go:219-338` 三模式剖析（空值率 / 基数 / p25–p99 / 直方图 / top_values）；`drift.go:121-238` 五种漂移指标 + 异常 + ack；规则推荐 `quality.go` `suggestQualityRules()` 基于剖析统计生成阈值与理由，`GET /api/quality/suggest` + 质量页「智能推荐」入口 | 前端规则目录 `metadata.json` `rule_types` 只暴露 6 类，缺 `freshness`；规则推荐只在 Agent 工具与质量页入口提供，未做自动下发 |
+| 数据质量监控：规则配置 + 异常检测 + 剖析 | 对齐 | `quality.go:96-141` 规则引擎 7 类（`quality.go:50` 允许 not_null/unique/range/enum/regex/custom_sql/freshness）；`quality.go:219-338` 三模式剖析（空值率 / 基数 / p25–p99 / 直方图 / top_values）；`drift.go:121-238` 五种漂移指标 + 异常 + ack；规则推荐 `quality.go` `suggestQualityRules()` 基于剖析统计生成阈值与理由，`GET /api/quality/suggest` + 质量页「智能推荐」入口 | `metadata.json` `rule_types` 已于 2026-11-13 补齐 `freshness`（7 类）；规则推荐只在 Agent 工具与质量页入口提供，未做自动下发 |
 | 数据安全防护：表级 / 行级权限 + 敏感识别 + 审计 | 部分 | 敏感识别 `governance.go` `scan()`：字段名规则 + 取值抽样（200 行）双重判定，输出 L1–L4 分级、命中比例与真实置信度；输出脱敏 `checkOutput()` 8 类 PII；审计 `server.go` 覆盖全部写操作 + `auditRead()` 标记的读接口（SQL 执行、目录预览、问数、归因、扫描、推理、知识检索） | **表级 / 行级权限整体缺失**（`auth.go` 只有 admin/member 两角色，无授权模型实体）；敏感识别仍为规则 + 抽样，未做模型判定 |
 | AI Ready 语义管理：指标 / 维度 / 语义建模 / 本体建模 | 对齐 | 指标 `resources.go:41` + `analysis.go:65-203` 统一口径编译；本体 `resources.go:50-52,253-283` 实体/关系（subject/event/dimension/metric_group）+ 术语表；`pages-ontology.js:91-322` CRUD + SVG 关系图 | 维度靠手填，未从血缘自动推导 |
 
@@ -255,35 +257,37 @@
 | 9 | 通知渠道补飞书 | 完成：`metadata.json` `channel_types` 增 `feishu`（5 → 6） |
 | 10 | 规则建议智能化 | 完成：`quality.go` `suggestQualityRules()` 基于剖析统计生成阈值与理由；`GET /api/quality/suggest` + 质量页「智能推荐」入口；Agent 侧产出 `quality_suggestions` 产物 |
 
-**P2 — 需要外部依赖或较大改造（6 / 14 完成）**
+**P2 — 需要外部依赖或较大改造（12 / 14 完成，2026-11-13 追加轮次补齐 6 项）**
 
 | 原编号 | 事项 | 本轮结果 |
 | --- | --- | --- |
 | 1 | AI 辅助建源建任务 | 完成：`sync.go` `createSource()` / `createSyncTask()` + `create_source` / `create_sync_task` 工具；字段映射自动补全未做 |
 | 2 | 同步任务实体与执行器 | 完成：`sync_tasks` 表 + `runSyncTask()` 全量 / 水位增量 + 调度接入 Tick + 前端「同步与出湖」页签 |
-| 3 | 目标表结构演进 | **未做**：仍是 `CREATE OR REPLACE`，缺 `ALTER TABLE ADD COLUMN` 的 DESCRIBE diff 与漂移触发 |
+| 3 | 目标表结构演进 | ✅ 完成（追加轮次）：`landing.go` 统一三处落库路径，按 `DESCRIBE` diff 执行 `ALTER TABLE ADD COLUMN` 并按列交集投影；`drift.go` 归档 `trigger=drift` 事件，`evolution.go` 记录演进历史 |
 | 4 | 数据对账与出湖 | 完成：`egress.go` `POST /api/ingest/reconcile`、`POST /api/ingest/egress`、`GET /api/ingest/egress` |
-| 5 | 在线推理服务 | **部分完成**：`/predict` 路由与真实推理语句齐备；鉴权、限流与预测质量监控未做 |
-| 6 | 看板拖拽搭建 | 完成：`pages-gov.js` 卡片增删改、图表类型切换、指标引用或只读 SQL 数据源、HTML5 拖拽排序，落库 `PATCH /api/dashboards/{id}`；自由画布布局（栅格 / 吸附）未做 |
-| 7 | 语义检索 | **未做**：仍为 `LIKE` + IDF 加权，无 embedding / 向量索引 |
-| 8 | 行级 / 表级权限 | **未做**：仍只有 admin / member 两角色，无授权模型实体 |
+| 5 | 在线推理服务 | ✅ 鉴权与限流已补（追加轮次）：`serveguard.go` 令牌（SHA-256 摘要）+ 令牌桶限流 + `predictGuarded`；**仍缺预测质量监控**，推理走 SQL 语句而非模型框架 |
+| 6 | 看板拖拽搭建 | ✅ 完成（追加轮次）：`pages-gov.js` 补 12 列栅格、宽度下拉、高度 20px 吸附拖拽、自动排布，`spec.layout` 落库；非像素级自由画布 |
+| 7 | 语义检索 | ✅ 完成（追加轮次）：`semantic.go` 本地哈希 embedding（256 维稀疏向量）+ 倒排索引 + TF-IDF 混合召回，`hybridKnowledge` 替换 `LIKE`；非 embedding 模型 / 向量库 |
+| 8 | 行级 / 表级权限 | ✅ 完成（追加轮次）：`grants.go` 授权实体 + 策略求值（deny 优先、行谓词白名单、子查询注入过滤），`queryAs()` 在读路径生效 |
 | 9 | 数据科学补齐 | **未做**：无在线特征表、实验类型仍为传统 ML、无模型血缘、无 AutoML |
 | 10 | 实时同步 | **未做**：CDC 链路与分库分表路由需外部消息中间件 |
 | 11 | BI 对接 | **未做**：无 Power BI 等嵌入令牌与语义模型推送 |
-| 12 | 工作空间资源配额 | **未做**：schema 无 quota 表 |
+| 12 | 工作空间资源配额 | ✅ 完成（追加轮次）：`quota.go` + `workspace_quota` 表，6 类资源数量限额，默认不限制 |
 | 13 | Ray 集群与 GPU 资源 | **未做**：`cluster_types` 仍为 4 类 |
 | 14 | 工程 Agent 的 ETL 代码生成与数仓方案 | **未做**：仍无需求理解与数仓方案生成 |
 
 **剩余待办（8 项，按依赖排序）**
 
-1. **表结构演进** — `ingest.go` 由 `CREATE OR REPLACE` 改为按 `DESCRIBE` diff 执行 `ALTER TABLE ADD COLUMN`，并由 `drift.go` 的 schema 变化触发。纯本地可做，不依赖外部系统。
-2. **推理服务鉴权与限流** — 在现有 `/predict` 上补工作空间鉴权与令牌桶限流。
-3. **看板自由布局** — 在现有拖拽排序上补栅格、尺寸与吸附。
-4. **语义检索** — embedding 列 + 向量索引，替换 `resources.go` 的 `LIKE`。
-5. **行级 / 表级权限** — 新增 grant 表与策略求值入口，支持行级谓词。
-6. **工作空间资源配额** — schema 增 `workspace_quota` 表。
-7. **数据科学补齐** — 在线特征表与同步、实验类型 ml/dl/llm/agent、模型血缘、AutoML。
-8. **外部依赖项** — 实时同步（CDC 需消息中间件）、BI 对接、Ray / GPU 集群。
+> 2026-11-13 追加轮次已把前 6 项（纯本地可做）全部落地，详见 [HANDOFF.md](../HANDOFF.md)「追加轮次 · 2026-11-13」。第 7、8 项仍需外部系统或推理框架，保留。
+
+1. ~~**表结构演进**~~ — ✅ 完成：三处重建路径统一走 `landing.go`，按 `DESCRIBE` diff 执行 `ALTER TABLE ADD COLUMN` 并按列交集投影写入；`drift.go` 字段数变化归档 `trigger=drift` 演进事件（`evolution.go`）。
+2. ~~**推理服务鉴权与限流**~~ — ✅ 完成：`/predict` 走 `predictGuarded`，令牌实体（SHA-256 摘要、明文仅返回一次）+ `X-Predict-Token` 校验 + 按 `workspace:service` 令牌桶限流（`serveguard.go`）。
+3. ~~**看板自由布局**~~ — ✅ 完成：12 列栅格、卡片宽度下拉、高度拖拽 20px 吸附、栅格显隐、自动排布，`spec.layout` 落库（`web/js/pages-gov.js`、`web/styles.css`）。
+4. ~~**语义检索**~~ — ✅ 完成：本地确定性哈希 embedding（256 维稀疏向量）+ 倒排词条索引 + TF-IDF 混合召回，替换 `resources.go` 的 `LIKE`，文档增改删增量维护（`semantic.go`）。注意是本地哈希向量而非 embedding 模型。
+5. ~~**行级 / 表级权限**~~ — ✅ 完成：`grants` 表 + 策略求值（deny 优先 / 行谓词白名单 / 子查询注入过滤），`queryAs()` 在用户读路径生效（`grants.go`）。
+6. ~~**工作空间资源配额**~~ — ✅ 完成：`workspace_quota` 表，6 类资源按数量限额，默认不限制（`quota.go`）。
+7. **数据科学补齐** — 未做：在线特征表与同步、实验类型 ml/dl/llm/agent、模型血缘、AutoML，需训练 / 特征服务框架。
+8. **外部依赖项** — 未做：实时同步（CDC 需消息中间件）、BI 对接（Power BI 等嵌入令牌）、Ray / GPU 集群。
 
 ### 6.10 Buddy 任务台（对标官方控制台）
 

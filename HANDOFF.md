@@ -1,4 +1,4 @@
-# 交接记录 · 2026-11-12
+# 交接记录 · 2026-11-13
 
 ## 本轮目标
 
@@ -95,3 +95,46 @@ DATABUDDY_DATA_DIR=/tmp/odb-dev go run ./cmd/opendatabuddy --port 8042
 - 编译需要 CGO 工具链；本次执行环境为 Windows x64，GCC 需使用与 DuckDB 静态库 ABI 匹配的 winlibs 版本。
 
 这些边界不应当被描述为已验证的商业级完整能力。
+
+---
+
+## 追加轮次 · 2026-11-13（§6.9 剩余待办收口）
+
+在 `12893c3` 之上，把 [docs/OSS_DIFF.md](docs/OSS_DIFF.md) §6.9 的「剩余待办（8 项，按依赖排序）」中**纯本地可做**的 6 项全部落地；第 7、8 项（数据科学补齐、外部依赖：CDC / BI / Ray / GPU）仍需外部系统或推理框架，保留在清单里。分支维持 `main`，不新建分支。
+
+### 本轮实现（6 / 8 项可本地完成的待办）
+
+| 项 | 能力 | 实现 | 新增文件 |
+| --- | --- | --- | --- |
+| 1 | 表结构演进 | 三处 `CREATE OR REPLACE` 重建路径（离线同步、外部目录同步、SQL / 文件导入）统一改走 `landing.go` 的共享落库路径：先 `DESCRIBE` diff，只对新增列执行 `ALTER TABLE ADD COLUMN`，再按「源列 ∩ 目标列」投影写入；全量导入清空保证幂等、增量同步追加。`drift.go` 检出字段数变化时归档 `trigger=drift` 的演进事件（不自动加列，需 `/api/catalog/evolve` 显式登记） | `evolution.go`、`landing.go` |
+| 2 | 推理服务鉴权与限流 | `/predict` 改走 `predictGuarded`：先鉴权再限流最后推理。令牌实体 `predict_tokens`（库中只存 SHA-256 摘要，明文仅创建响应返回一次），`X-Predict-Token` / Bearer 校验 + 服务绑定 + scopes；按 `workspace:service` 的令牌桶限流，超配额 429。`require_token` 默认关闭以保持向后兼容 | `serveguard.go` |
+| 3 | 看板自由布局 | 12 列栅格画布：卡片宽度下拉（半宽 / 全宽 / 三分之一）、右下角手柄拖拽调高（20px 吸附）、栅格显隐、自动排布、保存布局；布局随 `spec.layout` 与 `spec.cards` 一起落库 | `web/js/pages-gov.js`、`web/styles.css` |
+| 4 | 语义检索 | 本地确定性「哈希 embedding」（256 维稀疏向量，CJK 二元组 + ASCII 词/前缀）+ 倒排词条索引 + TF-IDF，余弦与词面混合召回（0.65 / 0.35）；`knowledge-search` 升级为混合检索，纯词面查询仍兜底到原 IDF；文档增改删增量维护索引 | `semantic.go` |
+| 5 | 行级 / 表级权限 | `grants` 授权实体（主体 user/role/workspace × 对象 table/schema/catalog/column × 动作 × allow/deny × 行谓词），显式 deny 优先、未配置策略时兼容模式零开销；行级谓词走严格文法白名单（挡注入），`queryAs()` 在 `guard/qualify` 之前求值并把谓词包成子查询过滤 | `grants.go` |
+| 6 | 工作空间资源配额 | `workspace_quota` 表，按 6 类资源（数据表 / 工作流 / 看板 / 智能体 / 数据源 / 会话）限制新建数量，默认 `-1` 不限制；创建入口统一 `checkQuota`，超限 409 | `quota.go` |
+
+**共享地基**：`foundation.go` 集中登记全部新路由与契约；`schema.sql` / `migrations.json` 新增 6 张表；`openapi.json` 补 13 个路径；`metadata.json` 补授权元数据并补齐 `freshness` 规则类型（§6.4 复核项）；`store.go` 增加限流桶字段。
+
+### 可重复验证
+
+```bash
+CGO_ENABLED=1 go build ./...
+CGO_ENABLED=1 go vet ./...
+CGO_ENABLED=1 go test ./... -count=1
+ODB_HTTP_TEST=1 CGO_ENABLED=1 go test ./... -count=1
+node --check web/js/<每个文件>.js
+```
+
+本轮全部通过。新增 `extensions_test.go`，覆盖：
+`TestTableEvolutionAddsColumnsWithoutDropping`（加列不丢数据 / 旧行为 NULL）、`TestTableEvolutionRejectsUnsafeType`（DDL 类型白名单）、`TestDriftRecordsEvolutionEvent`、`TestPredictTokenAuthAndRateLimit`（令牌摘要 / 401 / 令牌桶 429 / 吊销）、`TestSemanticIndexAndHybridRecall`（混合召回 + 增量索引）、`TestGrantPolicyEvaluationAndEnforcement`（deny 优先 / 行谓词注入 / 注入白名单）、`TestWorkspaceQuotaEnforcement`（限额 409 / 不限制）、`TestExtensionRouteInventory`（路由 / OpenAPI / 迁移 / 元数据契约）。
+
+### 仍未完成（诚实边界）
+
+- **数据科学补齐**：在线特征表与同步、实验类型 ml/dl/llm/agent、模型血缘、AutoML —— 需要训练 / 特征服务框架。
+- **外部依赖项**：实时同步（CDC 需 Kafka/Pulsar 等消息中间件）、BI 对接（Power BI 等嵌入令牌与语义模型推送）、Ray / GPU 集群 —— 需要外部系统。
+- 语义检索是**本地哈希向量 + 倒排**，不是 embedding 模型 / 向量数据库；对同义词与语义泛化的能力有限，纯词面查询仍走 IDF 兜底。
+- 行级权限的谓词仅支持 `列 op 字面量` 文法（含 IN / LIKE），不支持子查询 / 函数 / 跨表关联；`admin` 在配置了任何策略后不再自动放行。
+- `/predict` 推理仍走登记的 SQL 推理语句，不是模型框架；没有预测质量监控。
+- 看板自由布局是「栅格列宽 + 高度吸附 + 排序」，不是像素级自由画布（无绝对定位 / 重叠 / 跨格拖拽）。
+- 配额只统计数量，不统计存储体积 / CU / 行数。
+

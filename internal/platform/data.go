@@ -49,7 +49,7 @@ func (a *App) dataRoutes() []route {
 		}},
 		{"GET", "/api/catalog/preview", false, false, func(c *request) any {
 			t := a.resolve(c.WS, c.q("ref"))
-			return a.query(c.WS, "SELECT * FROM "+physical(t)+" LIMIT 100", 100)
+			return a.queryAs(c.WS, c.User, "SELECT * FROM "+physical(t)+" LIMIT 100", 100)
 		}},
 		{"POST", "/api/catalog/catalogs", false, false, func(c *request) any {
 			validName(c.s("name"))
@@ -85,7 +85,7 @@ func (a *App) dataRoutes() []route {
 			return M{"ok": true}
 		}},
 		{"POST", "/api/sql/run", false, false, func(c *request) any {
-			r := a.query(c.WS, c.s("sql"), int(num(def(c.Body, "limit", 1000))))
+			r := a.queryAs(c.WS, c.User, c.s("sql"), int(num(def(c.Body, "limit", 1000))))
 			r["chart"] = chart(r)
 			return r
 		}},

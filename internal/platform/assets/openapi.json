@@ -11467,6 +11467,160 @@
           }
         }
       }
+    },
+    "/api/catalog/evolve": {
+      "post": {
+        "summary": "按 DESCRIBE diff 演进表结构（新增列 ALTER TABLE ADD COLUMN）",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/catalog/evolutions": {
+      "get": {
+        "summary": "表结构演进历史",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/serving/tokens": {
+      "get": {
+        "summary": "推理访问令牌清单",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      },
+      "post": {
+        "summary": "创建推理访问令牌",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/serving/tokens/{token_id}": {
+      "delete": {
+        "summary": "吊销推理访问令牌",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/serving/limits": {
+      "get": {
+        "summary": "推理限流配置与状态",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/knowledge/index": {
+      "post": {
+        "summary": "重建语义检索索引",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/knowledge/semantic": {
+      "get": {
+        "summary": "混合语义检索",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/grants/meta": {
+      "get": {
+        "summary": "授权元数据",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/grants": {
+      "get": {
+        "summary": "授权清单",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      },
+      "post": {
+        "summary": "创建授权",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/grants/check": {
+      "post": {
+        "summary": "权限求值",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/grants/{grant_id}": {
+      "patch": {
+        "summary": "更新授权",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      },
+      "delete": {
+        "summary": "删除授权",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/quota": {
+      "get": {
+        "summary": "工作空间配额总览",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/quota/{resource}": {
+      "put": {
+        "summary": "设置资源配额",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
     }
   },
   "components": {

@@ -28,6 +28,19 @@ type App struct {
 	Dir, Root    string
 	columns      map[string]map[string]bool
 	ownedKernels sync.Map
+
+	// predictLimiterMu guards per-(workspace, service) token buckets for the
+	// online inference endpoint (P2-5). Buckets are created lazily.
+	predictLimiterMu sync.Mutex
+	predictBuckets   map[string]*tokenBucket
+}
+
+type tokenBucket struct {
+	mu       sync.Mutex
+	tokens   float64
+	capacity float64
+	rate     float64 // tokens per second
+	last     time.Time
 }
 
 func now() string { return time.Now().UTC().Format(time.RFC3339) }

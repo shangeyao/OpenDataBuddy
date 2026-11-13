@@ -140,6 +140,7 @@ func (a *App) newFlow(ws string, m M) M {
 	if mode == "event" && str(f["trigger_key"]) == "" {
 		f["trigger_key"] = "evt_" + id()
 	}
+	a.checkQuota(ws, "flows") // P2-12
 	a.insert("flows", f)
 	return a.flowShape(a.owned("flows", str(f["id"]), ws))
 }

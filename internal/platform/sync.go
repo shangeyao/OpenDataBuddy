@@ -172,34 +172,14 @@ func (a *App) runSyncTask(ws string, t M) (out M) {
 			where = " WHERE " + quote(str(t["watermark_column"])) + " > " + sqlLiteral(str(t["watermark_value"]))
 		}
 		data := rows(db, "SELECT * FROM "+quote(name)+where)
-		defs := []string{}
-		qs := []string{}
+		desired := []M{}
 		for _, col := range cols {
-			defs = append(defs, quote(str(col["name"]))+" "+columnType(str(col["type"])))
-			qs = append(qs, "?")
+			desired = append(desired, M{"name": str(col["name"]), "type": columnType(str(col["type"]))})
 		}
 		targetTable := quote(lakeNamespace(str(catRow["physical_prefix"]), cat, sch)) + "." + quote(name)
-		_, e = a.Lake.Exec("CREATE OR REPLACE TABLE " + targetTable + " (" + strings.Join(defs, ",") + ")")
-		must(e)
-		if len(data) > 0 {
-			tx, e := a.Lake.Begin()
-			must(e)
-			stmt, e := tx.Prepare("INSERT INTO " + targetTable + " VALUES (" + strings.Join(qs, ",") + ")")
-			must(e)
-			for _, row := range data {
-				values := []any{}
-				for _, col := range cols {
-					values = append(values, row[str(col["name"])])
-				}
-				if _, e = stmt.Exec(values...); e != nil {
-					stmt.Close()
-					tx.Rollback()
-					fail(400, e.Error())
-				}
-			}
-			stmt.Close()
-			must(tx.Commit())
-		}
+		// P2-3：按 DESCRIBE diff 演进表结构，而不是整表 CREATE OR REPLACE
+		// 全量导入先清空保证幂等；增量导入追加（水位过滤在 SQL 侧完成）
+		a.landRows(ws, targetTable, desired, data, str(t["mode"]) != "incremental")
 		a.registerTable(ws, schRow, name, "同步任务 "+str(t["name"]))
 		results = append(results, M{"table": name, "rows": len(data), "mode": str(t["mode"])})
 		out["total_rows"] = num(out["total_rows"]) + float64(len(data))
@@ -296,8 +276,8 @@ var extraTools = []M{
 			"description": "注册一个数据源并生成连接配置。template 取模板 id（如 sqlite、mysql、postgres），config 填连接参数。",
 			"parameters": M{"type": "object", "properties": M{
 				"name":        M{"type": "string", "description": "数据源名称"},
-				"template":   M{"type": "string", "description": "数据源模板 id"},
-				"config":     M{"type": "object", "description": "连接配置，如 path、host、port、database、user、password"},
+				"template":    M{"type": "string", "description": "数据源模板 id"},
+				"config":      M{"type": "object", "description": "连接配置，如 path、host、port、database、user、password"},
 				"description": M{"type": "string", "description": "用途说明"},
 			}, "required": []any{"name"}}}},
 	},
@@ -307,12 +287,12 @@ var extraTools = []M{
 			"name":        "create_sync_task",
 			"description": "为一个已注册的数据源创建离线同步任务：按 cron 调度把源表同步进湖仓。",
 			"parameters": M{"type": "object", "properties": M{
-				"name":            M{"type": "string", "description": "任务名称"},
-				"source_id":       M{"type": "string", "description": "数据源 id 或名称"},
-				"target":          M{"type": "string", "description": "目标 catalog.schema"},
-				"cron":            M{"type": "string", "description": "五段 cron 表达式"},
-				"mode":            M{"type": "string", "description": "full 或 incremental"},
-				"tables":          M{"type": "array", "items": M{"type": "string"}, "description": "要同步的源表，留空表示全部"},
+				"name":             M{"type": "string", "description": "任务名称"},
+				"source_id":        M{"type": "string", "description": "数据源 id 或名称"},
+				"target":           M{"type": "string", "description": "目标 catalog.schema"},
+				"cron":             M{"type": "string", "description": "五段 cron 表达式"},
+				"mode":             M{"type": "string", "description": "full 或 incremental"},
+				"tables":           M{"type": "array", "items": M{"type": "string"}, "description": "要同步的源表，留空表示全部"},
 				"watermark_column": M{"type": "string", "description": "增量同步的水位列"},
 			}, "required": []any{"name", "source_id"}}}},
 	},

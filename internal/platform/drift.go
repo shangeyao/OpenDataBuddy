@@ -220,6 +220,8 @@ func (a *App) anomaly(ws string, m M) M {
 	}
 	if num(old["column_count"]) != num(current["column_count"]) {
 		findings = append(findings, M{"kind": "schema", "severity": "warning", "detail": "字段数量发生变化"})
+		// P2-3：结构漂移归档为结构演进事件，供 /api/catalog/evolve 显式补列
+		a.triggerEvolutionFromDrift(ws, str(t["ref"]), "字段数量由 "+str(old["column_count"])+" 变为 "+str(current["column_count"]))
 	}
 	for _, v := range arr(current["columns"]) {
 		col := obj(v)

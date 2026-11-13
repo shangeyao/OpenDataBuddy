@@ -48,6 +48,7 @@ func (a *App) registerTable(ws string, sch M, name, description string) M {
 	if old != nil {
 		a.update("tables", key, m)
 	} else {
+		a.checkQuota(ws, "tables") // P2-12：只限制新建，重建已有表不占额度
 		a.insert("tables", m)
 	}
 	for i, col := range rows(a.Lake, "DESCRIBE "+table) {
@@ -58,10 +59,8 @@ func (a *App) registerTable(ws string, sch M, name, description string) M {
 func (a *App) importSQL(ws, target, name, q, desc string) M {
 	sch, table := a.target(ws, target, name)
 	q = a.qualify(ws, guard(q))
-	_, e := a.Lake.Exec("CREATE OR REPLACE TABLE " + table + " AS " + q)
-	if e != nil {
-		fail(400, e.Error())
-	}
+	// P2-3：已存在的表按 DESCRIBE diff 加列并追加，而不是整表重建
+	a.landSQL(ws, table, q)
 	return a.registerTable(ws, sch, name, desc)
 }
 func xlsxCSV(path string) string {
@@ -168,6 +167,7 @@ func (a *App) volumeFiles(v M) []M {
 	})
 	return files
 }
+
 // probe checks whether a configured data source is reachable. SQLite catalogs are
 // opened read-only and their real tables are reported; other types fall back to
 // a network reachability check and say plainly that credentials were not verified.
@@ -313,10 +313,9 @@ func (a *App) ingestRoutes() []route {
 			if suffix == ".parquet" || suffix == ".pq" {
 				reader = "read_parquet"
 			}
-			_, e = a.Lake.Exec("CREATE OR REPLACE TABLE " + table + " AS SELECT * FROM " + reader + "('" + strings.ReplaceAll(path, "'", "''") + "')")
-			if e != nil {
-				fail(400, e.Error())
-			}
+			// P2-3：文件重传按 DESCRIBE diff 演进表结构，而非整表重建
+			selectSQL := "SELECT * FROM " + reader + "('" + strings.ReplaceAll(path, "'", "''") + "')"
+			a.landSQL(c.WS, table, selectSQL)
 			t := a.registerTable(c.WS, sch, name, "文件导入："+filepath.Base(h.Filename))
 			return M{"table": t, "row_count": t["row_count"], "ref": t["ref"]}
 		}},

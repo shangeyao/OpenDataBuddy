@@ -323,6 +323,26 @@ func TestHTTPNewCapabilities(t *testing.T) {
 		t.Fatal(assessment)
 	}
 
+	// ---- 2026-11-13 追加轮次：§6.9 新增能力的 HTTP 冒烟 ----
+	call("GET", "/quota", nil, 200)
+	call("PUT", "/quota/agents", M{"max_items": -1}, 200)
+	call("GET", "/grants/meta", nil, 200)
+	call("GET", "/grants", nil, 200)
+	gr := obj(call("POST", "/grants", M{"subject_type": "role", "subject": "admin", "object_ref": "*", "actions": []any{"select"}, "effect": "allow"}, 200)["grant"])
+	call("POST", "/grants/check", M{"object_ref": "demo.retail.fact_orders", "action": "select"}, 200)
+	call("DELETE", "/grants/"+str(gr["id"]), nil, 200)
+	call("POST", "/knowledge/index", M{}, 200)
+	call("GET", "/knowledge/semantic?q=GMV", nil, 200)
+	call("GET", "/serving/tokens", nil, 200)
+	call("GET", "/serving/limits", nil, 200)
+	tk := call("POST", "/serving/tokens", M{"name": "http-token"}, 200)
+	if str(obj(tk["token"])["token"]) == "" {
+		t.Fatal("token plaintext missing", tk)
+	}
+	call("DELETE", "/serving/tokens/"+str(obj(tk["token"])["id"]), nil, 200)
+	call("GET", "/catalog/evolutions", nil, 200)
+	call("POST", "/catalog/evolve", M{"table_ref": "demo.retail.fact_orders"}, 200)
+
 	eventFlow := obj(call("POST", "/workflows", M{"name": "HTTP 事件流", "nodes": []M{{"id": "sql", "type": "sql", "config": M{"sql": "SELECT 1"}}}, "run_mode": "event", "enabled": true}, 200)["workflow"])
 	key := str(eventFlow["trigger_key"])
 	if key == "" {

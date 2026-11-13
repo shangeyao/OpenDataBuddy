@@ -26,6 +26,7 @@ func (a *App) conversation(c *request, key string) M {
 	}
 	return r
 }
+
 // modeGroups maps a scenario to the tool groups it may use. Every scenario keeps
 // the shared read tools plus knowledge and memory; the specialist groups are what
 // make engineering, governance and analysis behave differently.
@@ -248,7 +249,7 @@ func (a *App) invoke(c *request, conv, name string, args M) (out M) {
 		t := a.resolve(c.WS, str(args["table"]))
 		return M{"table": t, "columns": a.rows("SELECT * FROM columns WHERE table_id=? ORDER BY ordinal", t["id"])}
 	case "run_query":
-		out = a.query(c.WS, str(args["sql"]), int(num(def(args, "limit", 200))))
+		out = a.queryAs(c.WS, c.User, str(args["sql"]), int(num(def(args, "limit", 200))))
 		out["chart"] = chart(out)
 		return
 	case "list_metrics":
@@ -532,6 +533,7 @@ func (a *App) agentRoutes() []route {
 			if _, ok := modeGroups[mode]; !ok {
 				fail(422, "未知的会话场景")
 			}
+			a.checkQuota(c.WS, "conversations") // P2-12
 			return M{"conversation": a.insert("conversations", M{"id": id(), "workspace_id": c.WS, "user_id": c.User["id"], "title": def(c.Body, "title", "新会话"), "mode": mode, "agent_id": agentID, "chat_mode": def(c.Body, "chat_mode", "agent"), "created_at": now(), "updated_at": now()})}
 		}},
 		{"GET", "/api/conversations/{conversation_id}", false, false, func(c *request) any {

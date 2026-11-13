@@ -205,8 +205,7 @@ func (a *App) operationRoutes() []route {
 				existed := a.row("SELECT id FROM tables WHERE schema_id=? AND name=?", sch["id"], tableName) != nil
 				data := rows(source, "SELECT * FROM "+quote(tableName)+" LIMIT 100000")
 				cols := rows(source, "PRAGMA table_info("+quote(tableName)+")")
-				defs := []string{}
-				qs := []string{}
+				desired := []M{}
 				for _, col := range cols {
 					typ := "VARCHAR"
 					u := strings.ToUpper(str(col["type"]))
@@ -216,30 +215,12 @@ func (a *App) operationRoutes() []route {
 					if strings.Contains(u, "REAL") || strings.Contains(u, "FLOAT") || strings.Contains(u, "DOUBLE") {
 						typ = "DOUBLE"
 					}
-					defs = append(defs, quote(str(col["name"]))+" "+typ)
-					qs = append(qs, "?")
+					desired = append(desired, M{"name": str(col["name"]), "type": typ})
 				}
 				target := quote(lakeNamespace(str(cat["physical_prefix"]), name, "main")) + "." + quote(tableName)
-				_, e = a.Lake.Exec("CREATE OR REPLACE TABLE " + target + " (" + strings.Join(defs, ",") + ")")
-				must(e)
-				tx, e := a.Lake.Begin()
-				must(e)
-				stmt, e := tx.Prepare("INSERT INTO " + target + " VALUES (" + strings.Join(qs, ",") + ")")
-				must(e)
-				for _, row := range data {
-					values := []any{}
-					for _, col := range cols {
-						values = append(values, row[str(col["name"])])
-					}
-					_, e = stmt.Exec(values...)
-					if e != nil {
-						stmt.Close()
-						tx.Rollback()
-						fail(400, e.Error())
-					}
-				}
-				stmt.Close()
-				must(tx.Commit())
+				// P2-3：外部目录同步也走 DESCRIBE diff 演进，全量替换保证幂等
+				a.landRows(c.WS, target, desired, data, true)
+
 				imported = append(imported, a.registerTable(c.WS, sch, tableName, "外部 SQLite 同步"))
 				if existed {
 					updated++
